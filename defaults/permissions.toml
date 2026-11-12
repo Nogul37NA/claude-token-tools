@@ -1,0 +1,84 @@
+# Hồ sơ quyền theo vai cho agent con — khung Phòng điều hành kiểm ở bước tool.check, TRƯỚC khi tool chạy.
+# Đây là MẶC ĐỊNH đi kèm tool. Muốn chỉnh cho máy mình: tạo ~/.claude/claude-token-tools/permissions.toml
+# chỉ chứa phần cần ghi đè (ví dụ [roles.developer] write = [...]) — bản cập nhật tool không ghi đè file đó.
+# Xem kết quả gộp:  py -I bin/ctt.py permissions
+#
+# Chỉ SIẾT THÊM: quy tắc và chế độ quyền của Claude Code vẫn giữ nguyên; cái gì Claude Code đã chặn thì vẫn chặn.
+# Vai của agent lấy từ [agent_role] trong policy.toml (tên agent → vai), hoặc tên agent trùng tên vai.
+# Phiên chính và agent không có vai (general-purpose, Explore, agent của Workflow…) không bị giới hạn.
+#
+# Mỗi vai:
+#   write      = glob đường dẫn được ghi (Write/Edit/NotebookEdit), tương đối với thư mục project.
+#                "**" = mọi thư mục; glob không có "/" (vd "*.md") so với tên file ở mọi thư mục.
+#   ask_write  = glob phải hỏi bạn dù nằm trong write (xét trước write).
+#   bash       = tiền tố lệnh được chạy (Bash/PowerShell). Lệnh ghép (&&, ||, ;, |, xuống dòng) phải
+#                từng đoạn đều khớp. "*" = mọi lệnh. Ghi ra file bằng ">" coi như ghi, chỉ "*" mới cho.
+#   outside    = "deny" (chặn, model đọc lý do) | "ask" (hỏi bạn) khi ngoài các danh sách trên.
+# Tool chỉ đọc (engine đánh dấu isReadOnly: Read, Grep, Glob, lệnh Bash chỉ đọc…) luôn được chạy.
+# Tool khác (MCP, Agent, WebFetch…) không xét ở đây.
+
+[common]
+# Lệnh mọi vai đều được chạy (cộng thêm vào bash của từng vai).
+bash = ["cd", "pwd", "ls", "dir", "cat", "head", "tail", "grep", "rg", "find", "wc", "echo",
+        "git status", "git diff", "git log", "git show", "git branch", "git rev-parse", "git blame",
+        # xem phiên bản công cụ (0.17.8: reviewer bị chặn ở python --version)
+        "python --version", "py --version", "python3 --version", "node --version", "npm --version",
+        "java -version", "mvn -v", "mvn --version"]
+
+[always_ask]
+# Biểu thức chính quy (không phân biệt hoa thường) trên toàn lệnh Bash/PowerShell: khớp là hỏi bạn,
+# với mọi agent có vai, kể cả vai được "*".
+bash = ['\bgit\s+(push|commit|reset\s+--hard|rebase|merge)\b',
+        '\brm\s+-[a-z]*r',
+        '\bRemove-Item\b.*-Recurse',
+        '\bfind\b.*\s-(delete|exec)',
+        '\b(drop|truncate)\s+(table|database|schema)\b',
+        '\bprod\b']
+
+[roles.planner]
+write = []
+bash = []
+outside = "deny"
+
+[roles.architect]
+write = ["docs/**", "*.md"]
+bash = []
+outside = "deny"
+
+[roles.research]
+write = []
+bash = []
+outside = "deny"
+
+[roles.reviewer]
+write = []
+bash = []
+outside = "deny"
+
+[roles.debugger]
+write = ["**/src/main/**", "**/src/test/**"]
+ask_write = ["**/db/migration/**"]
+bash = ["mvn", "./mvnw", "mvnw", "gradle", "./gradlew", "npm test", "npm run", "npx", "py", "python",
+        "compile.bat", "curl", "docker logs", "docker ps"]
+outside = "ask"
+
+[roles.developer]
+# Vai viết code: ghi mọi nơi trong project (0.17.4; trước là **/src/main/** — chỉ hợp Java, Python/JS bị hỏi từng file).
+# Migration vẫn phải hỏi; ngoài project vẫn hỏi (outside); git push/commit vẫn hỏi ([always_ask]).
+write = ["**"]
+ask_write = ["**/db/migration/**", "**/migrations/**"]
+bash = ["mvn", "./mvnw", "mvnw", "gradle", "./gradlew", "npm", "npx", "py", "python", "compile.bat"]
+outside = "ask"
+
+[roles.tester]
+# Thư mục test theo quy ước thường gặp: Java/Maven, Python, JS/TS (0.17.1 thêm các mẫu ngoài src/test).
+write = ["**/src/test/**", "**/tests/**", "**/test/**", "**/__tests__/**", "**/test_*.py", "**/*_test.*",
+         "**/*.test.*", "**/*.spec.*"]
+bash = ["mvn", "./mvnw", "mvnw", "gradle", "./gradlew", "npm test", "npm run test", "npx", "py", "python",
+        "pytest", "compile.bat", "mkdir", "mktemp", "New-Item -ItemType Directory"]  # thư mục tạm cho dữ liệu test (0.17.8)
+outside = "deny"
+
+[roles.docs]
+write = ["docs/**", "*.md"]
+bash = []
+outside = "deny"

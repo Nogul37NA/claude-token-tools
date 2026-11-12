@@ -1,0 +1,112 @@
+# Chính sách model cho Claude Code — nguồn duy nhất cho mọi project.
+# Đây là MẶC ĐỊNH đi kèm tool. Muốn chỉnh cho máy mình: tạo ~/.claude/claude-token-tools/policy.toml
+# chỉ chứa phần cần ghi đè (ví dụ [scan] roots, [projects.*]) — bản cập nhật tool không ghi đè file đó.
+# Áp dụng:  py -I bin/ctt.py sync  (xem diff)  →  py -I bin/ctt.py sync --apply
+#
+# model:  opus | sonnet | haiku | fable | inherit   (alias — Claude Code tự lấy bản mới nhất)
+# effort: low | medium | high | xhigh | max
+#
+# Ghi chú khi chỉnh:
+# - Effort mặc định khác nhau theo model: Opus 5.5 = medium, Sonnet 5.5 = high, Haiku 5.5 = medium.
+#   Đặt `sonnet` + `medium` là HẠ effort so với mặc định của Sonnet.
+# - Sonnet 5.5: `low` chỉ hợp chat; việc nhiều bước / nhiều tool call bắt đầu từ `medium`.
+# - Haiku 5.5 rẻ nhưng prompt > 100k token giá x5. Repo có phần nạp sẵn ~80-100k token
+#   (CLAUDE.md + rules + memory) thì Haiku không rẻ như bảng giá — gọn phần nạp sẵn trước.
+# - Subagent chỉ chiếm ~5% lượt gọi (đo 30 ngày, 11/11/2026); phiên chính quyết định phần lớn chi phí → [session].
+
+# Model phiên chính.
+#   default        → ghi vào ~/.claude/settings.json ("model"), áp dụng mọi project
+#   projects.<tên>.session.default → ghi vào <project>/.claude/settings.json, ghi đè cho project đó
+# Phiên đang mở vẫn đổi được bằng /model.
+[session]
+default = "opus"
+
+[roles]
+planner   = { model = "opus",   effort = "high" }
+debugger  = { model = "opus",   effort = "high" }
+reviewer  = { model = "opus",   effort = "medium" }
+architect = { model = "opus",   effort = "medium" }
+developer = { model = "sonnet", effort = "medium" }
+tester    = { model = "sonnet", effort = "medium" }
+research  = { model = "sonnet", effort = "medium" }
+docs      = { model = "sonnet", effort = "low" }
+
+# Tên agent (tên file .md, bỏ đuôi) → vai. Agent không có ở đây và không trùng tên vai thì bỏ qua.
+[agent_role]
+brainstormer    = "architect"
+code-reviewer   = "reviewer"
+code-simplifier = "developer"
+debugger        = "debugger"
+developer       = "developer"
+docs-manager    = "docs"
+planner         = "planner"
+researcher      = "research"
+tester          = "tester"
+
+# Thứ tự nâng model khi một subtask thất bại (compile/test trượt 2 lần, reviewer chặn, hết 80% ngân sách
+# mà không tiến triển). lệnh sync KHÔNG dùng mục này — dành cho Router/orchestrator (P2/P3).
+# Nâng model = mở phiên mới kèm tóm tắt, không đổi model giữa phiên (cache gắn theo model).
+[escalation]
+ladder = ["sonnet:medium", "sonnet:high", "opus:high", "fable:high"]
+fail_threshold = 2
+
+# Các thư mục chứa project cần quét (mỗi thư mục con có .claude/agents sẽ được đồng bộ).
+[scan]
+roots = []          # trống = chỉ xét thư mục đang đứng; khai riêng ở policy của người dùng
+include_user_agents = true   # cũng đồng bộ ~/.claude/agents nếu có
+
+# Override theo project (tên thư mục project). Ví dụ:
+# [projects.shop_be.roles]
+# developer = { model = "sonnet", effort = "high" }
+# [projects.shop_be.session]
+# default = "sonnet"
+
+# Hook cảnh báo (chỉ cảnh báo, không chặn). Tắt nhanh: biến môi trường CTT_HOOKS=off.
+# Gợi ý giao việc trên khung Phòng điều hành (0.12.0). Ngưỡng đo từ transcript của máy (`ctt delegation`);
+# dưới min_samples agent thì dùng bảng mặc định dưới đây: context phiên chính → số lượt tối thiểu để giao có lời.
+# Ngân sách từng agent trên khung Phòng điều hành (M4, 0.13.0). Có phiếu ước lượng đã duyệt thì ngân sách agent =
+# ngân sách phiếu × tỉ lệ bước của vai (chia đều cho các agent cùng vai). Không có phiếu thì dùng trần dưới đây
+# (token xử lý, theo vai); để trống = không giới hạn. Ở 100% mỗi lượt gọi tool của agent phải hỏi bạn.
+[budget]
+enforce_model = false     # true: agent tạo ra với model khác [roles] thì đổi về model của vai (false: chỉ ghi nhật ký)
+raise_share = 0.5         # nút "Tăng ngân sách" cộng thêm chừng này × ngân sách ban đầu
+
+[budget.roles]
+# tester = 3_000_000
+# developer = 8_000_000
+
+[delegation]
+nudge = true              # khung nhắc khi phiên chính tự làm đã đủ số lượt để giao thì rẻ hơn
+hint_model = false        # thêm một đoạn quy tắc giao việc vào system prompt phiên chính (~60 token mỗi lượt)
+min_samples = 5
+days = 30
+contexts = [100000, 200000, 400000, 600000]
+sonnet = [3, 2, 2, 2]     # giao cho agent Sonnet
+same = [7, 6, 4, 3]       # giao cho agent cùng model phiên chính
+
+# Phiên con (0.16.0). Giao việc:
+#   - việc ngắn trong một phiên (tra cứu, review, chạy test) → subagent; hỏi lại agent bằng SendMessage tới agentId,
+#     rẻ nhất, không bị giữ tin vì lệch chế độ quyền;
+#   - việc lớn, độc lập, sống lâu (một tính năng trên nhánh riêng) → phiên con (start_session), cùng chế độ quyền.
+# Phiên cha chỉ nhận báo cáo ngắn khi phiên con xong lượt, không đọc transcript của nó.
+# Plugin chèn [tt-parent:<id> tầng:<n>] vào lời giao việc để Phòng điều hành dựng cây phiên, và chặn mở thêm
+# phiên con khi vượt trần dưới đây.
+[sessions]
+max_depth = 2             # phiên mở tay là tầng 0; phiên con tầng 1; phiên cháu tầng 2
+max_children = 4          # số phiên con một phiên được mở cùng lúc (có hoạt động trong 10 phút)
+
+# Quy trình /token-tools:ship (0.17.0): 1 yêu cầu → sản phẩm, 2 lần duyệt (phiếu + bảng chia việc; merge/commit).
+[workflow]
+clarify_max = 3                 # hỏi tối đa chừng này câu chặn việc, một lần, trước khi bắt đầu
+max_steps = 8                   # số dòng tối đa của bảng chia việc
+fix_rounds = 2                  # số vòng kiểm chứng → sửa trước khi giao phần còn lại là việc mở
+session_min_tokens = 2_000_000  # bước ước dưới chừng này token không được mở phiên con (giao subagent)
+auto_approve_usd = 0.0          # 0: luôn hỏi duyệt lần 1; > 0: phiếu có ngân sách ≤ chừng này $ thì tự duyệt
+
+[hooks]
+enabled = true
+context_warn_tokens = 200000        # cảnh báo khi context phiên vượt ngưỡng này…
+context_warn_step_tokens = 100000   # …và nhắc lại mỗi khi tăng thêm chừng này (không nhắc mỗi lượt)
+idle_warn_minutes = 60              # phiên nghỉ lâu hơn thời hạn cache 1 giờ → lượt sau ghi lại toàn bộ context
+tool_output_warn_tokens = 8000      # một lần gọi tool trả output lớn hơn ngưỡng này
+chars_per_token = 3.0               # ước lượng token từ số ký tự (tiếng Việt tốn token hơn tiếng Anh)

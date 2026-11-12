@@ -1,0 +1,32 @@
+{
+  "description": "token-tools: cảnh báo context lớn, phiên nghỉ quá hạn cache, output tool lớn (chỉ cảnh báo, không chặn) + mod Phòng điều hành (/control-room). Tắt: CTT_HOOKS=off",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v py >/dev/null 2>&1; then py -I \"${CLAUDE_PLUGIN_ROOT}/bin/ctt_hook.py\" user-prompt-submit; else python3 -I \"${CLAUDE_PLUGIN_ROOT}/bin/ctt_hook.py\" user-prompt-submit; fi",
+            "shell": "bash",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v py >/dev/null 2>&1; then py -I \"${CLAUDE_PLUGIN_ROOT}/bin/ctt_hook.py\" post-tool-use; else python3 -I \"${CLAUDE_PLUGIN_ROOT}/bin/ctt_hook.py\" post-tool-use; fi",
+            "shell": "bash",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "modules": [
+    "./register.tsx"
+  ]
+}

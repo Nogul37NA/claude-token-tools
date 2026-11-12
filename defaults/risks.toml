@@ -1,0 +1,62 @@
+# Danh mục rủi ro cho phiếu ước lượng. Ghi đè/thêm ở ~/.claude/claude-token-tools/risks.toml (cùng cấu trúc).
+# points: cộng vào điểm rủi ro (Thấp 0–2 · Vừa 3–5 · Cao ≥ 6, xem estimate.toml)
+# effects: developer_opus (bước code dùng Opus · high) · reviewer_opus · tests_required · regression_tests
+#          human_gate (người duyệt trước commit) · separate_commit · split_clarify (tách giai đoạn làm rõ)
+# p90_extra: hệ số giãn P90 thêm (ngoài hệ số theo mức)
+# auto: phát hiện tự động từ hồ sơ (mô tả để người đọc hiểu; logic nằm trong engine)
+
+[wide_impact]
+name = "Vùng ảnh hưởng rộng"
+points = 2
+effects = ["reviewer_opus"]
+auto = "scope.impacted_classes > 15"
+
+[flyway]
+name = "Có Flyway / đổi schema"
+points = 2
+effects = ["human_gate", "separate_commit"]
+auto = "scope.migrations > 0"
+
+[prod_hotfix]
+name = "Nhánh hotfix prod"
+points = 2
+effects = ["developer_opus", "tests_required"]
+auto = "branch chứa 'prod'"
+
+[money]
+name = "Tiền tệ (ví, hoa hồng, phí, thanh toán)"
+points = 2
+effects = ["developer_opus", "tests_required"]
+
+[async_tx]
+name = "Transaction / bất đồng bộ / Kafka / batch"
+points = 1
+effects = ["reviewer_opus"]
+
+[auth]
+name = "Phân quyền"
+points = 1
+effects = ["reviewer_opus"]
+
+[shared_query]
+name = "Query dùng chung nhiều màn"
+points = 2
+effects = ["regression_tests"]
+
+[no_tests]
+name = "Không có test bao phủ"
+points = 1
+effects = ["tests_required"]
+
+[external_dependency]
+name = "Phụ thuộc hệ ngoài (thanh toán, CRM, đối tác)"
+points = 1
+effects = []
+p90_extra = 1.2
+auto = "scope.integrations > 0"
+
+[unclear_requirements]
+name = "Yêu cầu chưa rõ"
+points = 2
+effects = ["split_clarify"]
+auto = "≥ 3 câu hỏi mở"

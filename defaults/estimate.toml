@@ -1,0 +1,57 @@
+# Tham số bộ ước lượng. Ghi đè ở ~/.claude/claude-token-tools/estimate.toml. Hiệu chỉnh lại sau mỗi đợt đối chiếu.
+
+days = 60                 # lấy phiên hiệu chỉnh trong N ngày gần nhất
+min_samples = 8           # nhóm ít hơn → dùng [fallback] và hạ độ tin cậy
+high_confidence_samples = 15
+budget_factor = 1.2       # ngân sách = P90 × hệ số này
+checkpoints = [0.5, 0.8, 1.0]
+
+# Ước số file sẽ sửa khi hồ sơ không ghi sẵn files_estimate
+[files]
+impacted_factor = 0.8     # change_existing: impacted_classes × hệ số
+per_api = 2
+per_entity = 3
+per_migration = 1
+per_screen = 2            # new_feature / product
+
+[risk_levels]
+low_max = 2
+mid_max = 5
+p90_multiplier = { low = 1.0, mid = 1.2, high = 1.5 }
+
+# Chia token theo bước (tổng = 1). Vai lấy model/effort từ [roles] của policy.toml.
+[steps.change]
+research = 0.15
+developer = 0.55
+tester = 0.15
+reviewer = 0.15
+
+[steps.investigation]   # chỉ giai đoạn chẩn đoán; phần sửa ước lượng lại khi có nguyên nhân
+research = 0.3
+debugger = 0.7
+
+[steps.qa]
+research = 1.0
+
+[step_names]
+research = "Khảo sát code / tài liệu"
+developer = "Viết / sửa code"
+tester = "Compile + test"
+reviewer = "Review"
+debugger = "Chẩn đoán"
+
+# Alias model trong policy → model id để tra giá
+[model_ids]
+opus = "claude-opus-5-5"
+sonnet = "claude-sonnet-5-5"
+haiku = "claude-haiku-5-5"
+fable = "claude-fable-5-2"
+
+# Dùng khi nhóm có ít hơn min_samples phiên. Lấy từ mốc ban đầu 11/11/2026 (108 phiên, gần như toàn Opus 5.5).
+[fallback]
+model = "claude-opus-5-5"
+qa = { p50_tokens = 1_000_000, p90_tokens = 2_900_000, p50_usd = 0.87, p90_usd = 1.64 }
+investigation = { p50_tokens = 6_200_000, p90_tokens = 44_700_000, p50_usd = 3.20, p90_usd = 23.68 }
+small = { p50_tokens = 6_800_000, p90_tokens = 17_600_000, p50_usd = 3.09, p90_usd = 7.36 }
+medium = { p50_tokens = 16_100_000, p90_tokens = 54_700_000, p50_usd = 9.33, p90_usd = 22.24 }
+large = { p50_tokens = 174_100_000, p90_tokens = 364_600_000, p50_usd = 62.45, p90_usd = 150.51 }

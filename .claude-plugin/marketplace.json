@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "token-tools",
+  "description": "Công cụ quản lý token và model cho Claude Code",
+  "owner": {
+    "name": "Nogul37NA"
+  },
+  "plugins": [
+    {
+      "name": "token-tools",
+      "source": "./",
+      "displayName": "Token Tools",
+      "description": "Đo token/chi phí theo ngày, project, loại task, % hạn mức gói; áp chính sách model cho agent.",
+      "category": "productivity"
+    }
+  ]
+}
