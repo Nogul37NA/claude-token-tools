@@ -412,6 +412,10 @@ def page(report):
         steps = "".join(
             f'<div><span class="mono muted">[{e(s.get("status", ""))}]</span> {e(s.get("name", ""))} · '
             f'{e(s.get("role") or "—")} · {e(MODE_TEXT.get(s.get("mode"), s.get("mode", "")))}'
+            f'{" · chờ " + e(", ".join(s["needs"])) if s.get("needs") else ""}'
+            f'{" · " + str(s["attempts"]) + " lần thử" if s.get("attempts", 0) > 1 else ""}'
+            f'{" · " + str(len(s["report"]["files"])) + " file" if (s.get("report") or {}).get("files") else ""}'
+            f'{" · test: " + e(s["report"]["tests"]) if (s.get("report") or {}).get("tests") else ""}'
             f'{" · " + e(s["note"]) if s.get("note") else ""}</div>' for s in r["plan"]) or \
             '<div class="muted">Chưa có bảng chia việc.</div>'
         extra = []
