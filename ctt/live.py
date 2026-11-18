@@ -14,7 +14,7 @@ MAIN = "main"
 
 def session_files(projects_dir, session_id):
     """{agent id or 'main': transcript path} for a session; empty when the session is unknown."""
-    main = next(Path(projects_dir).glob(f"*/{session_id}.jsonl"), None)
+    main = next(config.long_path(projects_dir).glob(f"*/{session_id}.jsonl"), None)
     if main is None:
         return {}
     files = {MAIN: main}

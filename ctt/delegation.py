@@ -59,7 +59,8 @@ def read_requests(path, session, is_subagent):
     """(requests in time order, report text): each API request once (a message split over lines keeps its last)."""
     by_id = {}
     handback = last_text = ""
-    with open(path, encoding="utf-8") as handle:
+    from ctt.config import long_path
+    with open(long_path(path), encoding="utf-8") as handle:
         for line in handle:
             try:
                 row = json.loads(line)
@@ -125,7 +126,8 @@ def runs(projects_dir, prices, days=30, now=None):
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=days)
     found = []
-    for main_path in sorted(Path(projects_dir).glob("*/*.jsonl")):
+    from ctt.config import long_path
+    for main_path in sorted(long_path(projects_dir).glob("*/*.jsonl")):
         agents_dir = main_path.parent / main_path.stem / "subagents"
         agent_paths = sorted(agents_dir.glob("agent-*.jsonl")) if agents_dir.is_dir() else []
         if not agent_paths:
@@ -221,7 +223,8 @@ SONNET = "claude-sonnet-5-5"
 
 def session_model(projects_dir, session_id):
     """The model of the session's latest main-thread request, or None."""
-    main = next(Path(projects_dir).glob(f"*/{session_id}.jsonl"), None)
+    from ctt.config import long_path
+    main = next(long_path(projects_dir).glob(f"*/{session_id}.jsonl"), None)
     if main is None:
         return None
     requests, _ = read_requests(main, session_id, False)

@@ -12,6 +12,22 @@ def ctt_home():
     return Path(os.environ.get("CTT_HOME") or Path.home() / ".claude" / "claude-token-tools")
 
 
+def long_path(path):
+    """`path` as a Path that Windows opens past 260 characters (the `\\\\?\\` form); unchanged elsewhere.
+
+    A session opened without a folder lives in a project folder whose name alone is ~190 characters, so its
+    subagent transcripts sit past MAX_PATH: without this they are neither listed nor opened, and every figure
+    read from them (per-agent tokens, agent budgets, delegation, reports) silently comes out as zero."""
+    if os.name != "nt":
+        return Path(path)
+    text = os.path.abspath(str(path))
+    if text.startswith("\\\\?\\"):
+        return Path(text)
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
 def projects_dir():
     """Where Claude Code keeps session transcripts."""
     return Path(os.environ.get("CTT_CLAUDE_PROJECTS") or Path.home() / ".claude" / "projects")

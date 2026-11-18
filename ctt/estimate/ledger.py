@@ -49,7 +49,7 @@ def approved_for_session(session_id, path=None):
 
 def current_session(projects_dir, cwd):
     """(session_id, transcript path, size) of the newest top-level transcript of the project opened at cwd."""
-    projects_dir = Path(projects_dir)
+    projects_dir = config.long_path(projects_dir)
     wanted = encode_folder(str(cwd)).lower()
     folder = next((p for p in projects_dir.iterdir() if p.is_dir() and p.name.lower() == wanted), None) \
         if projects_dir.is_dir() else None
@@ -71,7 +71,8 @@ def running_session(projects_dir, cwd, window_seconds=120, now=None):
     import time
     now = time.time() if now is None else now
     recent = []
-    for path in Path(projects_dir).glob("*/*.jsonl") if Path(projects_dir).is_dir() else []:
+    projects_dir = config.long_path(projects_dir)
+    for path in projects_dir.glob("*/*.jsonl") if projects_dir.is_dir() else []:
         try:
             stat = path.stat()
         except OSError:
@@ -99,7 +100,7 @@ def usage_parts_since(transcript_path, offset, prices, last_key=None, include_si
     parts = dict.fromkeys(PARTS, 0)
     usd = 0.0
     from ctt.transcripts import Request  # local import keeps hook start-up light
-    with open(transcript_path, "rb") as handle:
+    with open(config.long_path(transcript_path), "rb") as handle:
         handle.seek(offset)
         chunk = handle.read()
     end = chunk.rfind(b"\n") + 1

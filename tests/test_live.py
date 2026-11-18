@@ -79,5 +79,45 @@ class LiveTest(unittest.TestCase):
         self.assertEqual((budget["id"], budget["budget_tokens"], budget["used_tokens"]), ("e1", 24, 0))
 
 
+class LongPathTest(unittest.TestCase):
+    """0.22.2: a session opened without a folder has a project folder name of ~190 characters, so on Windows its
+    subagent transcripts lie past MAX_PATH (260) and were neither listed nor read."""
+
+    def test_long_path_form(self):
+        import os
+        from ctt import config
+        if os.name != "nt":
+            self.assertEqual(config.long_path("/tmp/x"), Path("/tmp/x"))
+            return
+        self.assertEqual(str(config.long_path("C:\\work\\demo")), "\\\\?\\C:\\work\\demo")
+        self.assertEqual(str(config.long_path("\\\\?\\C:\\work\\demo")), "\\\\?\\C:\\work\\demo")  # not prefixed twice
+        self.assertEqual(str(config.long_path("\\\\server\\share\\x")), "\\\\?\\UNC\\server\\share\\x")
+
+    def test_subagent_transcripts_past_260_characters_are_found_and_counted(self):
+        import os
+        import tempfile
+        from ctt import config, live
+        from ctt.pricing import PriceTable
+        from tests.fixtures import PRICES, assistant, usage, write_jsonl
+        with tempfile.TemporaryDirectory() as temp:
+            projects = Path(temp) / "projects"
+            folder = "C--" + "-".join(["scratch-workspaces"] * 12)  # ~230 characters, as the app's own are long
+            session = "11111111-2222-3333-4444-555555555555"
+            base = config.long_path(projects / folder)
+            write_jsonl(base / f"{session}.jsonl", [assistant(session, "m0", "r0", "2026-11-12T01:00:00Z",
+                                                              usage=usage(read=1000))])
+            agent = base / session / "subagents" / "agent-a1b2c3.jsonl"
+            write_jsonl(agent, [assistant(session, "m1", "r1", "2026-11-12T01:01:00Z", usage=usage(read=500))])
+            if os.name == "nt":
+                self.assertGreater(len(str(projects / folder / session / "subagents" / "agent-a1b2c3.jsonl")), 260)
+            files = live.session_files(projects, session)  # the caller's plain path, as the CLI passes it
+            self.assertEqual(sorted(files), ["a1b2c3", "main"])
+            used = live.agent_usage(projects, session, PriceTable(PRICES), state_dir=Path(temp) / "state")
+            self.assertEqual(used["agents"]["a1b2c3"]["tokens"], 500)
+            self.assertEqual(used["total"]["tokens"], 1500)
+            import shutil
+            shutil.rmtree(config.long_path(projects))  # the temp folder's own cleanup cannot remove long paths
+
+
 if __name__ == "__main__":
     unittest.main()

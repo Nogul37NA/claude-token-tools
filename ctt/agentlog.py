@@ -24,6 +24,8 @@ def _clip(text, limit=CLIP):
 
 
 def _tail_lines(path, tail_bytes):
+    from ctt.config import long_path
+    path = long_path(path)
     size = os.path.getsize(path)
     with open(path, "rb") as handle:
         handle.seek(max(0, size - tail_bytes))

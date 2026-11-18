@@ -37,7 +37,8 @@ def settings():
 
 def last_main_request(transcript_path):
     """(context_tokens, model, timestamp) of the latest main-thread assistant request, read from the file tail."""
-    path = Path(transcript_path)
+    from ctt.config import long_path
+    path = long_path(transcript_path)
     with path.open("rb") as handle:
         size = handle.seek(0, os.SEEK_END)
         handle.seek(max(0, size - TAIL_BYTES))
