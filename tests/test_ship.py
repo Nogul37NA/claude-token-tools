@@ -262,6 +262,72 @@ class ShipTest(unittest.TestCase):
         self.assertEqual(ship.brief(run, [{"name": "API", "minutes": 25}])["stalled"], [{"name": "API", "minutes": 25}])
         self.assertEqual(ship.brief(ship.finish(run_id, "failed"), [{"name": "API", "minutes": 25}])["stalled"], [])
 
+    def test_gate_holds_its_step_and_lets_the_rest_run(self):
+        run_id = self._run_with([{"name": "API"}, {"name": "UI"}, {"name": "Test", "needs": ["API"]}])
+        run, gate = ship.gate_create(run_id, "API", " Sửa component dùng chung? ", ["có", "không", "có"])
+        self.assertEqual((gate["id"], gate["question"], gate["options"]), ("g1", "Sửa component dùng chung?", ["có", "không"]))
+        nxt = ship.next_steps(run)
+        self.assertEqual(([s["name"] for s in nxt["ready"]], nxt["gated"], nxt["waiting"]),
+                         (["UI"], [{"name": "API", "gates": ["g1"]}], [{"name": "Test", "on": ["API"]}]))
+        with self.assertRaisesRegex(ValueError, "chờ quyết định của người dùng .g1."):
+            ship.set_step(run_id, "API", "running")
+        ship.set_step(run_id, "UI", "running")  # the others go on
+        self.assertEqual(ship.brief(ship.load(run_id))["gates"],
+                         [{"id": "g1", "step": "API", "question": "Sửa component dùng chung?", "options": ["có", "không"]}])
+        self.assertIn("[chờ    ] g1 · bước API: Sửa component dùng chung? [có | không]", ship.summary(ship.load(run_id)))
+        self.assertIn("Chờ quyết định: g1", ship.resume_text(ship.load(run_id)))
+        with self.assertRaisesRegex(ValueError, "chỉ nhận: có . không"):
+            ship.gate_resolve(run_id, "g1", "để sau")
+        run, gate = ship.gate_resolve(run_id, "g1", "có")
+        self.assertEqual(gate["resolution"], "có")
+        nxt = ship.next_steps(run)
+        self.assertEqual(([s["name"] for s in nxt["ready"]], nxt["gated"]), (["API"], []))
+        self.assertEqual(nxt["decided"], [{"id": "g1", "step": "API", "question": "Sửa component dùng chung?", "resolution": "có"}])
+        self.assertEqual(ship.brief(run)["gates"], [])
+        ship.set_step(run_id, "API", "done")
+        self.assertEqual(ship.next_steps(ship.load(run_id))["decided"], [])  # the step is over: nothing left to act on
+        with self.assertRaisesRegex(ValueError, "đã được quyết định"):
+            ship.gate_resolve(run_id, "g1", "không")
+
+    def test_gate_refuses_what_it_cannot_ask(self):
+        run_id = self._run_with([{"name": "API"}])
+        for kwargs, message in (({"step": "Ghost", "question": "?"}, "không có bước"),
+                                ({"step": "API", "question": "  "}, "câu hỏi"),
+                                ({"step": "API", "question": "?", "options": ["một"]}, "ít nhất 2")):
+            with self.assertRaisesRegex(ValueError, message):
+                ship.gate_create(run_id, **kwargs)
+        _, free = ship.gate_create(run_id, "API", "Tên cột là gì?")
+        self.assertEqual(free["options"], [])
+        with self.assertRaisesRegex(ValueError, "không có cổng"):
+            ship.gate_resolve(run_id, "g9", "x")
+        with self.assertRaisesRegex(ValueError, "trống"):
+            ship.gate_resolve(run_id, "g1", " ")
+        self.assertEqual(ship.gate_resolve(run_id, "g1", "Doanh thu")[1]["resolution"], "Doanh thu")
+        # a gate on a running step does not stop it; a finished run takes no gate and shows none
+        ship.set_step(run_id, "API", "running")
+        ship.gate_create(run_id, "API", "Giữ API cũ?", ["có", "không"])
+        self.assertEqual(ship.next_steps(ship.load(run_id))["gated"], [])
+        self.assertEqual(ship.brief(ship.finish(run_id, "partial"))["gates"], [])
+        with self.assertRaisesRegex(ValueError, "đã kết thúc"):
+            ship.gate_create(run_id, "API", "?")
+
+    def test_cli_gate_create_list_resolve(self):
+        run_id = self._run_with([{"name": "API"}, {"name": "UI"}])
+        out = self.run_cli("ship-gate", run_id, "--step", "API", "--question", "Gộp vào nhánh chung?",
+                           "--option", "có", "--option", "không")
+        self.assertIn("Chờ quyết định: g1 · bước API: Gộp vào nhánh chung? [có | không]", out)
+        self.assertIn(f"ship-gate {run_id} --resolve g1 --answer", out)
+        self.assertIn("Chờ quyết định của người dùng: API (g1)", self.run_cli("ship-next", run_id))
+        self.assertIn("g1 · bước API", self.run_cli("ship-gate", run_id))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            self.run_cli("ship-gate", run_id, "--resolve", "g1")
+        self.assertIn("--answer", err.getvalue())
+        out = json.loads(self.run_cli("ship-gate", run_id, "--resolve", "g1", "--answer", "có", "--json"))
+        self.assertEqual(out["gate"]["resolution"], "có")
+        self.assertIn("Đã quyết định: g1 · bước API: Gộp vào nhánh chung? → có", self.run_cli("ship-next", run_id))
+        self.assertIn("không có cổng quyết định nào", self.run_cli("ship-gate", self._run_with([{"name": "X"}])))
+
     def test_cli_start_stage_step_finish(self):
         started = json.loads(self.run_cli("ship-start", "--title", "Trang báo cáo", "--session", "s-9", "--cwd", "C:/r"))
         run_id = started["run"]["id"]

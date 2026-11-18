@@ -10,6 +10,9 @@ carries the code of an earlier try is refused, so a late agent cannot close the 
 0.20.0: a step that keeps failing is sent up policy.toml's [escalation] ladder (`escalate` on the step: the model
 and effort to run it again with), and a running step nobody has written a transcript line for in
 [workflow] stall_minutes is reported as stalled.
+
+0.21.0: a decision gate is a question tied to one step (`gates` on the run). While it is open that step cannot
+start, the steps that need it wait, and every other step goes on; the answer is kept on the gate.
 """
 import json
 import secrets
@@ -217,10 +220,67 @@ def _waiting_on(run, step):
     return [need for need in step.get("needs", []) if status.get(need) not in ("done", "skipped")]
 
 
+def open_gates(run, step=None):
+    """The gates nobody has answered yet, of one step or of the whole run."""
+    return [g for g in run.get("gates", []) if "resolution" not in g and (step is None or g["step"] == step)]
+
+
+def gate_create(run_id, step, question, options=None, now=None):
+    """Ask something only the person can decide, for one step. Returns (run, gate)."""
+    run = load(run_id)
+    if not any(s["name"] == step for s in run.get("plan", [])):
+        raise ValueError(f"Kế hoạch không có bước {step!r}")
+    if run.get("finished_at"):
+        raise ValueError("Lượt đã kết thúc, không mở thêm cổng quyết định")
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("Cổng quyết định cần một câu hỏi")
+    options = list(dict.fromkeys(str(o).strip() for o in options or [] if str(o).strip()))
+    if len(options) == 1:
+        raise ValueError("Cổng quyết định cần ít nhất 2 lựa chọn, hoặc không có lựa chọn nào (trả lời tự do)")
+    gates = run.setdefault("gates", [])
+    gate = {"id": f"g{len(gates) + 1}", "step": step, "question": question, "options": options,
+            "created_at": now or _now()}
+    gates.append(gate)
+    return save(run), gate
+
+
+def gate_resolve(run_id, gate_id, resolution, now=None):
+    """Record the decision; the step may start again. Returns (run, gate)."""
+    run = load(run_id)
+    gate = next((g for g in run.get("gates", []) if g["id"] == gate_id), None)
+    if gate is None:
+        raise ValueError(f"Lượt không có cổng {gate_id!r}")
+    if "resolution" in gate:
+        raise ValueError(f"Cổng {gate_id} đã được quyết định: {gate['resolution']}")
+    resolution = (resolution or "").strip()
+    if not resolution:
+        raise ValueError("Quyết định trống")
+    if gate["options"] and resolution not in gate["options"]:
+        raise ValueError(f"Cổng {gate_id} chỉ nhận: {' | '.join(gate['options'])}")
+    gate.update(resolution=resolution, resolved_at=now or _now())
+    return save(run), gate
+
+
+def gate_text(gate):
+    line = f"{gate['id']} · bước {gate['step']}: {gate['question']}"
+    if "resolution" in gate:
+        return f"{line} → {gate['resolution']}"
+    return line + (f" [{' | '.join(gate['options'])}]" if gate["options"] else "")
+
+
 def next_steps(run):
     """What can start now, what is running, what waits and on what, what failed — for `ship-next` and the resume."""
-    out = {"ready": [], "running": [], "waiting": [], "failed": []}
+    out = {"ready": [], "running": [], "waiting": [], "failed": [], "gated": []}
+    live = {s["name"] for s in run.get("plan", []) if s["status"] not in ("done", "skipped")}
+    # decisions already made for steps still to finish: the main loop reads them here
+    out["decided"] = [{"id": g["id"], "step": g["step"], "question": g["question"], "resolution": g["resolution"]}
+                      for g in run.get("gates", []) if "resolution" in g and g["step"] in live]
     for step in run.get("plan", []):
+        gates = open_gates(run, step["name"])
+        if gates and step["status"] in ("pending", "failed"):
+            out["gated"].append({"name": step["name"], "gates": [g["id"] for g in gates]})
+            continue
         if step["status"] == "running":
             out["running"].append({"name": step["name"], "attempt": step.get("attempt")})
         elif step["status"] == "failed":
@@ -266,6 +326,10 @@ def set_step(run_id, name, status, note=None, attempt=None, files=None, tests=No
         waiting = _waiting_on(run, step)
         if waiting:
             raise ValueError(f"Bước {name} còn chờ: {', '.join(waiting)} — xem `ship-next`")
+        gates = open_gates(run, name)
+        if gates:
+            raise ValueError(f"Bước {name} chờ quyết định của người dùng ({', '.join(g['id'] for g in gates)}): "
+                             "làm bước khác trước — xem `ship-next`")
         if current:  # started again while a try is open: that try is given up, its code stops working
             _close_try(step, current, "abandoned", now)
         step["attempts"] = step.get("attempts", 0) + 1
@@ -350,6 +414,10 @@ def resume_text(run):
         lines.append("Lỗi: " + ", ".join(f"{s['name']} ({s['attempts']} lần thử)" for s in nxt["failed"]))
     if nxt["ready"]:
         lines.append("Chạy được ngay: " + ", ".join(s["name"] for s in nxt["ready"]))
+    for gate in open_gates(run):
+        lines.append("Chờ quyết định: " + gate_text(gate))
+    for gate in nxt["decided"]:
+        lines.append("Đã quyết định: " + gate_text(gate))
     if nxt["waiting"]:
         lines.append("Còn chờ: " + "; ".join(f"{s['name']} ← {', '.join(s['on'])}" for s in nxt["waiting"]))
     if not run.get("plan"):
@@ -399,6 +467,8 @@ def brief(run, stalled_steps=None):
             "running": [s["name"] for s in plan if s["status"] == "running"],
             "retries": sum(max(0, s.get("attempts", 0) - 1) for s in plan),
             "stalled": [] if over else list(stalled_steps or []),
+            "gates": [] if over else [{"id": g["id"], "step": g["step"], "question": g["question"],
+                                       "options": g["options"]} for g in open_gates(run)],
             "escalate": [] if over else [{"name": s["name"], **s["escalate"]} for s in plan
                                          if s["status"] == "failed" and s.get("escalate")],
             "result": run.get("result"), "check": run.get("check")}
@@ -431,6 +501,8 @@ def summary(run):
         if report.get("tests"):
             line += f" · test: {report['tests']}"
         lines.append(line)
+    for gate in run.get("gates", []):
+        lines.append(f"  [{'quyết' if 'resolution' in gate else 'chờ':<7}] " + gate_text(gate))
     if run.get("check"):
         c = run["check"]
         lines.append(f"  Thực tế {c.get('actual', 0) / 1e6:.1f}M token / P50 {c.get('p50', 0) / 1e6:.1f}M "
