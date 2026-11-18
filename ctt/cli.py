@@ -193,7 +193,7 @@ def cmd_permissions_set(args):
     from ctt import permissions
     try:
         profile = permissions.set_role(
-            args.role, outside=args.outside,
+            args.role, outside=args.outside, mcp=args.mcp,
             enabled=None if args.enabled is None else args.enabled == "true",
             add=tuple(args.add) if args.add else None, remove=tuple(args.remove) if args.remove else None,
             reset=args.reset)
@@ -287,10 +287,20 @@ def cmd_ship_stage(args):
 def cmd_ship_step(args):
     from ctt import ship
     try:
-        run = ship.set_step(args.id, args.name, args.status, args.note, args.attempt, args.file, args.tests)
+        escalation = ship.escalation_policy(load_policy(args.policy))
+        run = ship.set_step(args.id, args.name, args.status, args.note, args.attempt, args.file, args.tests,
+                            escalation=escalation)
     except ValueError as error:
         _ship_fail(error)
     _ship_out(run, args.json)
+    advice = next(s.get("escalate") for s in run["plan"] if s["name"] == args.name)
+    if args.status == "failed" and advice and not args.json:
+        if advice.get("exhausted"):
+            print(f"‼ Bước {args.name} lỗi {advice['failures']} lần và đã hết thang nâng model ([escalation] ladder): "
+                  "dừng bước này, ghi thành việc mở")
+        else:
+            print(f"↑ Bước {args.name} lỗi {advice['failures']} lần: chạy lại với model {advice['model']}, "
+                  f"effort {advice['effort']} (tham số model / effort khi gọi agent)")
     if args.status == "running" and not args.json:
         code = next(s["attempt"] for s in run["plan"] if s["name"] == args.name)
         print(f"Mã lần thử của bước {args.name}: {code} — báo xong / lỗi phải kèm --attempt {code}")
@@ -483,8 +493,9 @@ def main(argv=None):
     command = sub.add_parser("permissions-set", help="sửa quyền một vai trong bản riêng của máy (cho khung) → JSON")
     command.add_argument("--role", required=True)
     command.add_argument("--outside", choices=("deny", "ask"))
+    command.add_argument("--mcp", choices=("allow", "ask", "deny"), help="tool MCP không phải chỉ đọc")
     command.add_argument("--enabled", choices=("true", "false"))
-    command.add_argument("--add", nargs=2, metavar=("DANH_SÁCH", "GIÁ_TRỊ"), help="write | ask_write | bash")
+    command.add_argument("--add", nargs=2, metavar=("DANH_SÁCH", "GIÁ_TRỊ"), help="write | ask_write | bash | mcp_allow")
     command.add_argument("--remove", nargs=2, metavar=("DANH_SÁCH", "GIÁ_TRỊ"))
     command.add_argument("--reset", action="store_true", help="bỏ phần ghi đè của vai, về mặc định")
     command.set_defaults(handler=cmd_permissions_set)
@@ -525,6 +536,7 @@ def main(argv=None):
     command.add_argument("--attempt", help="mã lần thử nhận được lúc --status running; bắt buộc khi báo done / failed")
     command.add_argument("--file", action="append", help="file bước này đã đổi (lặp được) — ghi cùng done / failed")
     command.add_argument("--tests", help="kết quả test của bước, một dòng (vd '12 pass, 0 fail')")
+    command.add_argument("--policy")
     command.add_argument("--json", action="store_true")
     command.set_defaults(handler=cmd_ship_step)
 

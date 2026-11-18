@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "token-tools",
   "displayName": "Token Tools",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Đo token và chi phí của Claude Code từ transcript local (theo ngày, project, loại task, % hạn mức gói) và áp chính sách model cho agent của mọi project. Không gửi dữ liệu đi đâu. Có khung Phòng điều hành (/control-room): agent đang làm gì, token/$ từng agent, hạn mức, ngân sách phiếu.",
   "author": {
     "name": "Nogul37NA"

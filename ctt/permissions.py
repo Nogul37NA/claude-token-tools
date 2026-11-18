@@ -12,7 +12,8 @@ from ctt.config import ctt_home, load_layered, load_toml
 from ctt.policy import load_policy
 
 OUTSIDE = ("deny", "ask")
-LISTS = ("write", "ask_write", "bash")
+MCP = ("allow", "ask", "deny")
+LISTS = ("write", "ask_write", "bash", "mcp_allow")
 
 
 def load_permissions(explicit=None, policy_file=None):
@@ -24,19 +25,28 @@ def load_permissions(explicit=None, policy_file=None):
         outside = role.get("outside", "deny")
         if outside not in OUTSIDE:
             raise ValueError(f"[roles.{name}] outside = {outside!r}: chỉ nhận {' | '.join(OUTSIDE)}")
+        mcp = role.get("mcp", "allow")
+        if mcp not in MCP:
+            raise ValueError(f"[roles.{name}] mcp = {mcp!r}: chỉ nhận {' | '.join(MCP)}")
         roles[name] = {
             "write": list(role.get("write", [])),
             "ask_write": list(role.get("ask_write", [])),
             "bash": list(role.get("bash", [])),
             "outside": outside,
             "enabled": bool(role.get("enabled", True)),
+            # 0.20: MCP tools that are not read-only — allow (as before) | ask | deny; mcp_allow: tool-name globs
+            # let through whatever `mcp` says.
+            "mcp": mcp,
+            "mcp_allow": list(role.get("mcp_allow", [])),
         }
     always_ask = list(data.get("always_ask", {}).get("bash", []))
-    for pattern in always_ask:
-        try:
-            re.compile(pattern)
-        except re.error as error:
-            raise ValueError(f"[always_ask] bash {pattern!r}: {error}") from error
+    always_mcp = list(data.get("always_ask", {}).get("mcp", []))
+    for kind, patterns in (("bash", always_ask), ("mcp", always_mcp)):
+        for pattern in patterns:
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise ValueError(f"[always_ask] {kind} {pattern!r}: {error}") from error
     budget = policy.get("budget", {})
     caps = {}
     for name, cap in budget.get("roles", {}).items():
@@ -52,7 +62,7 @@ def load_permissions(explicit=None, policy_file=None):
         limits[key] = value
     return {
         "common": {"bash": list(data.get("common", {}).get("bash", []))},
-        "always_ask": {"bash": always_ask},
+        "always_ask": {"bash": always_ask, "mcp": always_mcp},
         "roles": roles,
         "agent_role": dict(policy.get("agent_role", {})),
         # M4: per-role token caps when the session has no approved estimate, and the role models of policy.toml.
@@ -76,9 +86,17 @@ def describe(profile):
                      f"{' · hỏi: ' + ', '.join(role['ask_write']) if role['ask_write'] else ''}")
         lines.append(f"  bash: {', '.join(role['bash']) or 'chỉ lệnh chung'} · ngoài quyền: "
                      f"{'chặn' if role['outside'] == 'deny' else 'hỏi'}")
+        if role["mcp"] != "allow" or role["mcp_allow"]:
+            lines.append(f"  tool MCP (không chỉ đọc): {MCP_TEXT[role['mcp']]}"
+                         f"{' · luôn cho: ' + ', '.join(role['mcp_allow']) if role['mcp_allow'] else ''}")
     lines.append(f"lệnh chung: {', '.join(profile['common']['bash'])}")
     lines.append(f"luôn hỏi: {' | '.join(profile['always_ask']['bash'])}")
+    if profile["always_ask"]["mcp"]:
+        lines.append(f"tool MCP luôn hỏi (theo tên): {' | '.join(profile['always_ask']['mcp'])}")
     return "\n".join(lines)
+
+
+MCP_TEXT = {"allow": "cho chạy", "ask": "hỏi", "deny": "chặn"}
 
 
 def _toml_value(value):
@@ -115,7 +133,7 @@ HEADER = ("# Quyền theo vai — bản riêng của máy này (ghi đè default
           "# Khung Phòng điều hành ghi lại file này khi bạn sửa quyền trên khung; bản trước: permissions.toml.bak\n\n")
 
 
-def set_role(role, *, outside=None, enabled=None, add=None, remove=None, reset=False, path=None):
+def set_role(role, *, outside=None, enabled=None, add=None, remove=None, reset=False, path=None, mcp=None):
     """Change one role in the user's override file and return the merged profile.
 
     add / remove: (list name, value), list name one of write | ask_write | bash. reset drops the role's override.
@@ -136,6 +154,10 @@ def set_role(role, *, outside=None, enabled=None, add=None, remove=None, reset=F
             current["outside"] = outside
         if enabled is not None:
             current["enabled"] = bool(enabled)
+        if mcp is not None:
+            if mcp not in MCP:
+                raise ValueError(f"mcp = {mcp!r}: chỉ nhận {' | '.join(MCP)}")
+            current["mcp"] = mcp
         for change, adding in ((add, True), (remove, False)):
             if change is None:
                 continue

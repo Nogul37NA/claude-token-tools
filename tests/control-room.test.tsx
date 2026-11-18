@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ago, alwaysAskWords, attention, cardMeta, describeCall, eventTone, isInternalTool, meter, percentTone,
   usageItems, modelLabel, mtok, parseAgentUsage, pickLimits,
-  openerFor, refreshUsage, resetProfile, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
+  openerFor, refreshUsage, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
 } from '../hooks/register'
 import { globToRegExp, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
 import type { Profile } from '../hooks/permissions'
@@ -497,6 +497,55 @@ const PROFILE = {
   agent_role: { 'code-reviewer': 'reviewer', tester: 'tester', developer: 'developer' },
 }
 
+test('0.20 judge: MCP tools — read-only runs, risky names ask, the rest follows the role', () => {
+  const p = {
+    ...PROFILE,
+    always_ask: { ...PROFILE.always_ask, mcp: ['(?:^|[_-])(delete|remove|trash)', '(?:^|[_-])(send|publish)'] },
+    roles: {
+      ...PROFILE.roles,
+      reviewer: { ...PROFILE.roles.reviewer, mcp: 'deny', mcp_allow: ['mcp__jira__get_*'] },
+      tester: { ...PROFILE.roles.tester, mcp: 'ask' },
+    },
+  } as unknown as Profile
+  const call = (role: string, tool: string, readOnly = false) => judge(p, role, tool, {}, 'C:/repo', readOnly)
+  // the default is allow: a profile written before 0.20 judges MCP tools as it did (not at all)
+  expect(call('developer', 'mcp__jira__create_issue')).toBeUndefined()
+  expect(judge(PROFILE as unknown as Profile, 'reviewer', 'mcp__drive__trash_file', {}, 'C:/repo', false)).toBeUndefined()
+  // a risky name asks for every role, on the tool's own name only (the server's name does not count)
+  expect(call('developer', 'mcp__drive__trash_file')?.decision).toBe('ask')
+  expect(call('developer', 'mcp__mail__send_message')?.reason).toContain('send_message')
+  expect(call('developer', 'mcp__send-grid__list_templates')).toBeUndefined()
+  expect(call('developer', 'mcp__docs__resend')).toBeUndefined()
+  // what the engine marks read-only always runs
+  expect(call('reviewer', 'mcp__drive__trash_file', true)).toBeUndefined()
+  expect(call('reviewer', 'mcp__jira__search', true)).toBeUndefined()
+  // the role's own setting, and its allow list
+  expect(call('reviewer', 'mcp__jira__create_issue')).toEqual({ decision: 'deny',
+    reason: 'Vai reviewer không được gọi tool MCP không phải chỉ đọc: mcp__jira__create_issue' })
+  expect(call('reviewer', 'mcp__jira__get_issue')).toBeUndefined()
+  expect(call('tester', 'mcp__jira__create_issue')?.decision).toBe('ask')
+  // a role switched off from the pane: only the always-ask names still ask
+  const off = { ...p, roles: { ...p.roles, reviewer: { ...p.roles.reviewer, enabled: false } } } as Profile
+  expect(judge(off, 'reviewer', 'mcp__jira__create_issue', {}, 'C:/repo', false)).toBeUndefined()
+  expect(judge(off, 'reviewer', 'mcp__drive__trash_file', {}, 'C:/repo', false)?.decision).toBe('ask')
+})
+
+test('0.20 ship: stalled steps and steps sent up the model ladder are spelled out', () => {
+  const ship = { id: 'r1', title: 'T', stage: 3, stage_name: 'Chạy', stages: 7, steps_done: 0, steps: 3, failed: 2,
+    running: ['API'], result: null, check: null, stalled: [{ name: 'API', minutes: 14 }],
+    escalate: [{ name: 'UI', model: 'opus', effort: 'high', failures: 2 }, { name: 'DB', exhausted: true, failures: 8 }] }
+  const parsed = parseAgentUsage(JSON.stringify({ agents: {}, total: { tokens: 0, usd: 0 }, ship })).ship!
+  expect(shipAlerts(parsed)).toEqual([
+    '⚠ Bước API đang ghi là chạy nhưng không ai hoạt động 14 phút — agent có thể đã dừng',
+    '↑ Bước UI lỗi nhiều lần — chạy lại bằng opus:high',
+    '‼ Bước DB đã hết thang nâng model — dừng, ghi thành việc mở',
+  ])
+  // a run written by 0.19 has neither field
+  const old = parseAgentUsage(JSON.stringify({ agents: {}, total: { tokens: 0, usd: 0 },
+    ship: { ...ship, stalled: undefined, escalate: undefined } })).ship!
+  expect(shipAlerts(old)).toEqual([])
+})
+
 test('0.17.1 judge: a ship work folder counts as the project; a plain variable assignment runs nothing', () => {
   const p = PROFILE as unknown as Profile
   const write = (path: string, root: string | string[]) =>
@@ -799,7 +848,7 @@ test('hint_model: the rule joins the system prompt only when switched on', async
   on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'x', scope: 'shared' }] }))
   const composed = await $.prompt.compose({ model: 'claude-fable-5-2', promptModel: 'claude-fable-5-2', surfaces: ['desktop'],
     tools: [], outputStyle: null, traits: [] } as never)
-  expect(composed.sections.map(section => section.id)).toEqual(['base', 'token-tools-delegation'])
+  expect(composed.sections.map(section => section.id)).toEqual(['base', 'token-tools:delegation'])
 })
 
 // M4 — budgets per agent.

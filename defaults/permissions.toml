@@ -14,8 +14,12 @@
 #   bash       = tiền tố lệnh được chạy (Bash/PowerShell). Lệnh ghép (&&, ||, ;, |, xuống dòng) phải
 #                từng đoạn đều khớp. "*" = mọi lệnh. Ghi ra file bằng ">" coi như ghi, chỉ "*" mới cho.
 #   outside    = "deny" (chặn, model đọc lý do) | "ask" (hỏi bạn) khi ngoài các danh sách trên.
+#   mcp        = "allow" (mặc định, như trước 0.20) | "ask" | "deny": tool MCP (tên mcp__<server>__<tool>) KHÔNG
+#                được engine đánh dấu chỉ đọc. Nhiều server không đánh dấu tool đọc của mình là chỉ đọc, nên siết
+#                thành "ask" / "deny" thì khai kèm mcp_allow.
+#   mcp_allow  = glob trên tên tool đầy đủ được chạy dù mcp là gì, vd "mcp__jira__get_*", "mcp__wiki__*".
 # Tool chỉ đọc (engine đánh dấu isReadOnly: Read, Grep, Glob, lệnh Bash chỉ đọc…) luôn được chạy.
-# Tool khác (MCP, Agent, WebFetch…) không xét ở đây.
+# Tool khác (Agent, WebFetch…) không xét ở đây.
 
 [common]
 # Lệnh mọi vai đều được chạy (cộng thêm vào bash của từng vai).
@@ -34,6 +38,10 @@ bash = ['\bgit\s+(push|commit|reset\s+--hard|rebase|merge)\b',
         '\bfind\b.*\s-(delete|exec)',
         '\b(drop|truncate)\s+(table|database|schema)\b',
         '\bprod\b']
+# Biểu thức chính quy (không phân biệt hoa thường) trên tên tool MCP, phần sau "mcp__<server>__": khớp là hỏi bạn,
+# với mọi agent có vai, trừ khi engine đánh dấu tool là chỉ đọc (0.20.0).
+mcp = ['(?:^|[_-])(delete|remove|trash|destroy|drop|purge)',
+       '(?:^|[_-])(send|publish|merge|deploy)']
 
 [roles.planner]
 write = []

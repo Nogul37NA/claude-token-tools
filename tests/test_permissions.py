@@ -81,6 +81,23 @@ class PermissionsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_children"):
             permissions.load_permissions()
 
+    def test_mcp_setting_defaults_to_allow_and_is_checked(self):
+        profile = permissions.load_permissions()
+        self.assertEqual({role["mcp"] for role in profile["roles"].values()}, {"allow"})
+        self.assertTrue(any("delete" in pattern for pattern in profile["always_ask"]["mcp"]))
+        profile = permissions.set_role("reviewer", mcp="deny", add=("mcp_allow", "mcp__jira__get_*"))
+        self.assertEqual((profile["roles"]["reviewer"]["mcp"], profile["roles"]["reviewer"]["mcp_allow"]),
+                         ("deny", ["mcp__jira__get_*"]))
+        self.assertIn("tool MCP (không chỉ đọc): chặn · luôn cho: mcp__jira__get_*", permissions.describe(profile))
+        with self.assertRaisesRegex(ValueError, "mcp"):
+            permissions.set_role("reviewer", mcp="maybe")
+        Path(self.home.name, "permissions.toml").write_text("[roles.tester]\nmcp = 'sometimes'\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "roles.tester"):
+            permissions.load_permissions()
+        Path(self.home.name, "permissions.toml").write_text("[always_ask]\nmcp = ['(']\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "always_ask. mcp"):
+            permissions.load_permissions()
+
     def test_set_role_refuses_bad_input(self):
         for kwargs in ({"add": ("write", "  ")}, {"add": ("nope", "x")}, {"outside": "maybe"}):
             with self.assertRaises(ValueError):

@@ -6,6 +6,10 @@ usage (`ctt agent-usage`), so the pane shows where the run stands without the mo
 
 0.19.0: a step may wait for others (`needs`), and each start of a step is a try with its own code — a report that
 carries the code of an earlier try is refused, so a late agent cannot close the step a newer try is working on.
+
+0.20.0: a step that keeps failing is sent up policy.toml's [escalation] ladder (`escalate` on the step: the model
+and effort to run it again with), and a running step nobody has written a transcript line for in
+[workflow] stall_minutes is reported as stalled.
 """
 import json
 import secrets
@@ -25,7 +29,10 @@ DEFAULTS = {
     "fix_rounds": 2,             # verify → fix rounds before handing over what is left as open
     "session_min_tokens": 2_000_000,  # a step estimated below this never gets a session of its own
     "auto_approve_usd": 0.0,     # 0: always ask; > 0: a run whose budget is at most this many $ needs no 1st approval
+    "stall_minutes": 10,         # a running step with no transcript activity for this long is shown as stalled; 0: off
 }
+MODELS = ("haiku", "sonnet", "opus", "fable")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 def settings(policy):
@@ -39,6 +46,62 @@ def settings(policy):
             whole = "" if isinstance(fallback, float) else " nguyên"
             raise ValueError(f"[workflow] {key} = {value!r}: cần số{whole} ≥ 0")
         out[key] = float(value) if isinstance(fallback, float) else value
+    return out
+
+
+def escalation_policy(policy):
+    """[escalation] and [roles] of policy.toml → {ladder: [(model, effort)], fail_threshold, roles: {role: (model,
+    effort)}}; ValueError on a ladder the command could not follow."""
+    raw = policy.get("escalation", {})
+    ladder = []
+    for rung in raw.get("ladder", []):
+        model, _, effort = str(rung).partition(":")
+        if model not in MODELS or effort not in EFFORTS:
+            raise ValueError(f"[escalation] ladder {rung!r}: cần dạng model:effort, model {' | '.join(MODELS)}, "
+                             f"effort {' | '.join(EFFORTS)}")
+        ladder.append((model, effort))
+    threshold = raw.get("fail_threshold", 2)
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
+        raise ValueError(f"[escalation] fail_threshold = {threshold!r}: cần số nguyên ≥ 1")
+    roles = {name: (spec.get("model"), spec.get("effort")) for name, spec in policy.get("roles", {}).items()
+             if isinstance(spec, dict)}
+    return {"ladder": ladder, "fail_threshold": threshold, "roles": roles}
+
+
+def escalate(step, escalation):
+    """Where the ladder sends a step after its failed tries: {model, effort, failures}, {exhausted, failures} past
+    the last rung, None while it has failed fewer than fail_threshold times (or there is no ladder).
+
+    The step starts at its role's rung (else the first rung of the role's model, else below the ladder) and
+    climbs one rung per fail_threshold failures."""
+    ladder = escalation["ladder"]
+    failures = sum(1 for t in step.get("tries", []) if t.get("status") == "failed")
+    climbed = failures // escalation["fail_threshold"]
+    if not ladder or not climbed:
+        return None
+    start = escalation["roles"].get(step.get("role") or "", (None, None))
+    base = ladder.index(start) if start in ladder else next(
+        (i for i, rung in enumerate(ladder) if rung[0] == start[0]), -1)
+    target = base + climbed
+    if target >= len(ladder):
+        return {"exhausted": True, "failures": failures}
+    return {"model": ladder[target][0], "effort": ladder[target][1], "failures": failures}
+
+
+def stalled(run, last_activity, minutes, now=None):
+    """Running steps nobody has worked on for `minutes`: [{name, minutes}]. `last_activity` is the newest write
+    (epoch seconds) to a transcript of the run's sessions and agents; None (unknown) or minutes 0: nothing."""
+    if not minutes or last_activity is None:
+        return []
+    now = now if now is not None else datetime.now(timezone.utc).timestamp()
+    out = []
+    for step in run.get("plan", []):
+        opened = next((t for t in step.get("tries", []) if t["id"] == step.get("attempt")), None)
+        if step["status"] != "running" or not opened:
+            continue
+        quiet = now - max(last_activity, datetime.fromisoformat(opened["started_at"]).timestamp())
+        if quiet >= minutes * 60:
+            out.append({"name": step["name"], "minutes": int(quiet // 60)})
     return out
 
 
@@ -188,7 +251,7 @@ def set_stage(run_id, stage, note=None, estimate_id=None, plan=None, limits=None
     return save(run)
 
 
-def set_step(run_id, name, status, note=None, attempt=None, files=None, tests=None, now=None):
+def set_step(run_id, name, status, note=None, attempt=None, files=None, tests=None, now=None, escalation=None):
     """One step's state. `running` opens a try and gives it a code (`attempt` on the step); `done` / `failed` of a
     step that has a try open must carry that code. `files` and `tests` are what the step reports when it ends."""
     if status not in STEP_STATES:
@@ -208,6 +271,8 @@ def set_step(run_id, name, status, note=None, attempt=None, files=None, tests=No
         step["attempts"] = step.get("attempts", 0) + 1
         step["attempt"] = f"a{step['attempts']}-{secrets.token_hex(2)}"
         step.setdefault("tries", []).append({"id": step["attempt"], "started_at": now})
+        if step.get("escalate", {}).get("model"):  # the try runs on the rung the last failure sent it to
+            step["tries"][-1].update(model=step["escalate"]["model"], effort=step["escalate"]["effort"])
         step.pop("report", None)
     elif status in ("done", "failed"):
         if attempt and attempt != current:
@@ -223,6 +288,11 @@ def set_step(run_id, name, status, note=None, attempt=None, files=None, tests=No
         report = {key: value for key, value in (("files", list(files or [])), ("tests", tests)) if value}
         if report:
             step["report"] = report
+        advice = escalate(step, escalation) if status == "failed" and escalation else None
+        if advice:
+            step["escalate"] = advice
+        elif status == "done" or not escalation:
+            step.pop("escalate", None)
     else:  # pending | skipped: any open try is given up
         if current:
             _close_try(step, current, "abandoned", now)
@@ -317,17 +387,30 @@ def for_session(session_id):
     return max(runs, key=lambda r: r.get("started_at", ""), default=None)
 
 
-def brief(run):
+def brief(run, stalled_steps=None):
     """What the pane shows: stage name and number, steps done / total, result when over."""
     if not run:
         return None
     plan = run.get("plan", [])
+    over = bool(run.get("finished_at"))
     return {"id": run["id"], "title": run["title"], "cwd": run.get("cwd"), "stage": run["stage"], "stage_name": STAGES[run["stage"]],
             "stages": len(STAGES), "steps_done": sum(1 for s in plan if s["status"] in ("done", "skipped")),
             "steps": len(plan), "failed": sum(1 for s in plan if s["status"] == "failed"),
             "running": [s["name"] for s in plan if s["status"] == "running"],
             "retries": sum(max(0, s.get("attempts", 0) - 1) for s in plan),
+            "stalled": [] if over else list(stalled_steps or []),
+            "escalate": [] if over else [{"name": s["name"], **s["escalate"]} for s in plan
+                                         if s["status"] == "failed" and s.get("escalate")],
             "result": run.get("result"), "check": run.get("check")}
+
+
+def escalate_text(step):
+    advice = step.get("escalate") if step["status"] == "failed" else None
+    if not advice:
+        return ""
+    if advice.get("exhausted"):
+        return " · hết thang nâng model"
+    return f" · chạy lại bằng {advice['model']}:{advice['effort']}"
 
 
 def summary(run):
@@ -341,6 +424,7 @@ def summary(run):
             line += f" · mã lần thử {step['attempt']}"
         elif step.get("attempts", 0) > 1:
             line += f" · {step['attempts']} lần thử"
+        line += escalate_text(step)
         report = step.get("report") or {}
         if report.get("files"):
             line += f" · {len(report['files'])} file"
