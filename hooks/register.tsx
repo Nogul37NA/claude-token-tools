@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, UiCopyArgs } from 'claude-code'
 
 import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, QuestionRow, ShipGate, ShipSnap, Spend, UsageSnap } from '../types'
-import { judge, roleFor } from './permissions'
+import { inAutoMode, judge, roleFor } from './permissions'
 import type { Profile } from './permissions'
 import { cheaperText, hintSection, minCalls, nudgeText } from './delegation'
 import type { Thresholds } from './delegation'
@@ -1175,7 +1175,7 @@ export const register: Register = on => {
     }
     if (!row?.role) return base
     const profile = await loadProfile($)
-    const held = await budgetVerdict($, row, e.tool, profile)
+    const held = inAutoMode(await budgetVerdict($, row, e.tool, profile), myMode, profile)
     if (!profile) return held && RANK[held.decision] >= RANK[base.decision] ? held : base
     // Ask the session for its folder on each check: the module's copy from session.start was found empty in the
     // desktop app (12/11/2026, every file judged "outside the project").
@@ -1188,8 +1188,8 @@ export const register: Register = on => {
     if (root) projectRoot = root
     // A /token-tools:ship run may work in a folder other than the session's: both count as the project.
     const work = (await read($, usage)).ship?.cwd
-    const byRole = judge(profile, row.role, e.tool, (e.input ?? {}) as Record<string, unknown>,
-      work && work !== root ? [root, work] : root, e.isReadOnly === true)
+    const byRole = inAutoMode(judge(profile, row.role, e.tool, (e.input ?? {}) as Record<string, unknown>,
+      work && work !== root ? [root, work] : root, e.isReadOnly === true), myMode, profile)
     // The stricter of the role and the budget; a budget hold is logged by budgetVerdict, not as a role ⛔/❓.
     if (held && (!byRole || RANK[held.decision] > RANK[byRole.decision])) {
       if (RANK[held.decision] < RANK[base.decision]) return base

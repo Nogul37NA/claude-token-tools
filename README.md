@@ -113,6 +113,15 @@ Báo cáo ghi vào `~/.claude/claude-token-tools/reports/` (đổi bằng `--out
 - *Review bằng nhà cung cấp khác*: `py -I bin/ctt.py ship-review <id> [--base HEAD]` đưa diff của lượt (thay đổi so với `--base`, kèm file mới chưa track) và tiêu chí xong của từng bước cho một agent CLI khác qua stdin, giữ câu trả lời trên lượt (`external_review`) và in ra cho bước kiểm chứng. **Mặc định tắt**: bật bằng `[review] external = true` và `command = [...]` trong policy riêng của máy — bật là gửi diff sang dịch vụ đó. Bạn tự chọn chương trình và tham số chỉ đọc của nó; token-tools không kiểm được chương trình đó làm gì. Không tìm thấy chương trình, quá `timeout_seconds` hay mã thoát khác 0 thì bước này bị bỏ qua, lượt không dừng. Câu trả lời được đưa cho Claude như dữ liệu cần kiểm lại, không phải chỉ dẫn. Chưa chạy với CLI thật nào (máy phát triển không cài CLI agent khác) — mới test bằng chương trình giả.
 - *Khi nào dùng vai nào*: `[role_notes]` trong policy là một dòng cho mỗi vai; `ship-start` in mục `roles` (model, effort, ghi chú) và `/token-tools:ship` chọn vai cho từng bước theo đó.
 
+**Đường dẫn dài và chế độ Auto (0.22.2, 0.23.0):**
+- *Đường dẫn dài trên Windows (0.22.2)*: phiên mở không chọn thư mục có tên thư mục project ~190 ký tự, nên transcript của agent con nằm quá 260 ký tự và `ctt` không đọc được — token từng agent và ngân sách agent luôn bằng 0, báo cáo đếm thiếu. Nay mọi chỗ đọc transcript dùng dạng đường dẫn dài của Windows.
+- *Chế độ Auto (0.23.0)*: đo 18/11/2026 trong một phiên ở chế độ quyền Auto — quy tắc "chặn" của vai vẫn chặn, nhưng mọi chỗ trả lời "hỏi bạn" (lệnh luôn hỏi như `git commit` / `git push` / lệnh có `prod`, `ask_write`, `outside = "ask"`, agent hết ngân sách) **không hiện hộp hỏi nào và lệnh vẫn chạy**. Nguyên nhân chưa được xác nhận; nhiều khả năng câu hỏi của hook được giao cho bộ phân loại của chế độ Auto. Vì vậy có `[auto_mode] ask` trong `permissions.toml`: `"ask"` (mặc định, như cũ) hoặc `"deny"` — trong phiên Auto mọi chỗ lẽ ra hỏi thành chặn, agent đọc lý do và ghi việc đó vào báo cáo để bạn tự làm. Đổi lại agent có vai không commit, push hay ghi migration được trong phiên Auto. Chế độ lấy từ lúc agent được tạo (chế độ của phiên chính lúc đó). Bật: thêm vào `~/.claude/claude-token-tools/permissions.toml`:
+  ```toml
+  [auto_mode]
+  ask = "deny"
+  ```
+  Phiên chính không có vai nên không bị quy tắc nào ở đây chạm tới, ở chế độ nào cũng vậy.
+
 **Bộ agent theo vai trong plugin (0.15.0):** `agents/` có 8 agent gọi được ở mọi project: `token-tools:planner`, `architect`, `research`, `developer`, `debugger`, `tester`, `reviewer`, `docs` — model/effort theo `[roles]` của policy (test giữ hai bên khớp), khởi động bằng quy ước của project đang mở (`CLAUDE.md`, `AGENTS.md`, `ai-rules/AGENT.md`), làm đúng phạm vi vai, báo cáo ngắn. Agent riêng của project (`.claude/agents`) vẫn dùng như cũ. `py -I bin/ctt.py agents --cwd <repo>` liệt kê agent gọi được theo mức project / người dùng / plugin; khung ghi mức cạnh model trên thẻ và liệt kê agent của từng vai trong "Quyền hạn".
 
 ## Phiếu ước lượng (GĐ5)

@@ -43,6 +43,17 @@ bash = ['\bgit\s+(push|commit|reset\s+--hard|rebase|merge)\b',
 mcp = ['(?:^|[_-])(delete|remove|trash|destroy|drop|purge)',
        '(?:^|[_-])(send|publish|merge|deploy)']
 
+# Chế độ quyền Auto (0.23.0). Đo 18/11/2026 trong một phiên Auto: khi một quy tắc ở đây trả lời "hỏi bạn" (lệnh
+# luôn hỏi, ask_write, outside = "ask", agent hết ngân sách) thì KHÔNG có hộp hỏi nào hiện ra và lệnh vẫn chạy —
+# nhiều khả năng câu hỏi được chuyển cho bộ phân loại của chế độ Auto chứ không tới người dùng. Quy tắc "chặn"
+# thì vẫn chặn.
+#   ask = "ask"   giữ như cũ: để app quyết (mặc định)
+#   ask = "deny"  trong phiên Auto, mọi chỗ lẽ ra "hỏi bạn" thành "chặn" (agent đọc lý do, nộp báo cáo). Đổi lại,
+#                 agent có vai không commit / push / ghi migration được trong phiên Auto.
+# Phiên ở chế độ khác (default, acceptEdits…) không bị ảnh hưởng.
+[auto_mode]
+ask = "ask"
+
 [roles.planner]
 write = []
 bash = []

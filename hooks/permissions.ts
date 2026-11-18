@@ -22,8 +22,20 @@ export type Profile = {
   role_models?: Record<string, string>
   /** 0.16: [sessions] of policy.toml. */
   sessions?: { max_depth: number; max_children: number }
+  /** 0.23: what an "ask" of these rules becomes in a session in Auto mode. */
+  auto_mode?: { ask: 'ask' | 'deny' }
 }
 export type Verdict = { decision: 'ask' | 'deny'; reason: string }
+
+/** 0.23: in Auto mode an "ask" from a hook was seen to reach nobody (the call ran with no prompt), so
+ *  `[auto_mode] ask = "deny"` turns every ask of the role rules and of the agent budget into a refusal there.
+ *  Any other mode, any other verdict, or the default setting: the verdict as it came. */
+export function inAutoMode(verdict: Verdict | undefined, mode: string | undefined, profile: Profile | undefined):
+  Verdict | undefined {
+  if (!verdict || verdict.decision !== 'ask' || mode !== 'auto' || profile?.auto_mode?.ask !== 'deny') return verdict
+  return { decision: 'deny', reason: `${verdict.reason} — phiên đang ở chế độ Auto nên không ai được hỏi: bị chặn ` +
+    '([auto_mode] ask = "deny"). Dừng việc này, ghi nó vào báo cáo để người dùng tự làm.' }
+}
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])

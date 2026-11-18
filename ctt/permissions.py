@@ -47,6 +47,9 @@ def load_permissions(explicit=None, policy_file=None):
                 re.compile(pattern)
             except re.error as error:
                 raise ValueError(f"[always_ask] {kind} {pattern!r}: {error}") from error
+    auto_ask = data.get("auto_mode", {}).get("ask", "ask")
+    if auto_ask not in OUTSIDE:
+        raise ValueError(f"[auto_mode] ask = {auto_ask!r}: chỉ nhận ask | deny")
     budget = policy.get("budget", {})
     caps = {}
     for name, cap in budget.get("roles", {}).items():
@@ -63,6 +66,8 @@ def load_permissions(explicit=None, policy_file=None):
     return {
         "common": {"bash": list(data.get("common", {}).get("bash", []))},
         "always_ask": {"bash": always_ask, "mcp": always_mcp},
+        # 0.23: what an "ask" of these rules becomes in a session in Auto mode — ask (left to the app) | deny
+        "auto_mode": {"ask": auto_ask},
         "roles": roles,
         "agent_role": dict(policy.get("agent_role", {})),
         # M4: per-role token caps when the session has no approved estimate, and the role models of policy.toml.
@@ -93,6 +98,8 @@ def describe(profile):
     lines.append(f"luôn hỏi: {' | '.join(profile['always_ask']['bash'])}")
     if profile["always_ask"]["mcp"]:
         lines.append(f"tool MCP luôn hỏi (theo tên): {' | '.join(profile['always_ask']['mcp'])}")
+    lines.append("phiên ở chế độ Auto: chỗ lẽ ra hỏi bạn thì "
+                 + ("CHẶN" if profile["auto_mode"]["ask"] == "deny" else "để app quyết (có thể không hỏi ai)"))
     return "\n".join(lines)
 
 

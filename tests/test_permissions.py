@@ -98,6 +98,20 @@ class PermissionsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "always_ask. mcp"):
             permissions.load_permissions()
 
+    def test_auto_mode_ask_defaults_to_ask_and_is_checked(self):
+        profile = permissions.load_permissions()
+        self.assertEqual(profile["auto_mode"], {"ask": "ask"})
+        self.assertIn("phiên ở chế độ Auto: chỗ lẽ ra hỏi bạn thì để app quyết", permissions.describe(profile))
+        override = Path(self.home.name, "permissions.toml")
+        override.write_text("[auto_mode]" + chr(10) + "ask = 'deny'" + chr(10), encoding="utf-8")
+        profile = permissions.load_permissions()
+        self.assertEqual(profile["auto_mode"], {"ask": "deny"})
+        self.assertIn("thì CHẶN", permissions.describe(profile))
+        self.assertEqual(permissions.set_role("tester", outside="ask")["auto_mode"], {"ask": "deny"})  # survives a pane edit
+        override.write_text("[auto_mode]" + chr(10) + "ask = 'maybe'" + chr(10), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "auto_mode"):
+            permissions.load_permissions()
+
     def test_set_role_refuses_bad_input(self):
         for kwargs in ({"add": ("write", "  ")}, {"add": ("nope", "x")}, {"outside": "maybe"}):
             with self.assertRaises(ValueError):
