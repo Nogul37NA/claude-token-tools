@@ -83,7 +83,9 @@ def cmd_estimate(args):
 
     session = None
     if args.session == "auto":
-        session = ledger.current_session(args.projects_dir, Path(args.cwd))
+        # 0.22.1: also when --cwd is a work folder other than the session's (was: no session, so no budget
+        # warnings and nothing for estimate-check to compare)
+        session = ledger.running_session(args.projects_dir, Path(args.cwd))
     elif args.session != "none":
         path = next(Path(args.projects_dir).glob(f"*/{args.session}.jsonl"), None)
         session = (args.session, str(path), path.stat().st_size) if path else None
@@ -266,14 +268,7 @@ def _ship_session(args):
         return None
     if args.session != "auto":
         return args.session
-    found = ledger.current_session(args.projects_dir, Path(args.cwd))
-    if not found:
-        # The work folder is not the session's own (0.17.1+): the session running this is the transcript
-        # written to in the last two minutes, newest first.
-        import time
-        recent = [p for p in Path(args.projects_dir).glob("*/*.jsonl") if time.time() - p.stat().st_mtime < 120]
-        newest = max(recent, key=lambda p: p.stat().st_mtime, default=None)
-        found = (newest.stem,) if newest else None
+    found = ledger.running_session(args.projects_dir, Path(args.cwd))
     return found[0] if found else None
 
 

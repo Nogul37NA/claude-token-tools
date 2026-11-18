@@ -150,6 +150,9 @@ class ShipTest(unittest.TestCase):
         run_id = self._run_with([{"name": "API"}, {"name": "UI"}, {"name": "Test", "needs": ["API", "UI"]}], "old")
         code = ship.set_step(run_id, "API", "running")["plan"][0]["attempt"]
         self.assertEqual([r["id"] for r in ship.unfinished()], [run_id])
+        ship.set_step(run_id, "UI", "done", files=["src/ui.py", "src/ui.css"])
+        self.assertIn("File của bước UI: src/ui.py, src/ui.css", ship.resume_text(ship.load(run_id)))
+        ship.set_step(run_id, "UI", "pending")
         text = self.run_cli("ship-resume", run_id, "--session", "new")
         self.assertIn(f"API [{code}]", text)
         self.assertIn("Chạy được ngay: UI", text)

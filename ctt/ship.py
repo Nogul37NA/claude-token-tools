@@ -417,6 +417,10 @@ def unfinished():
 def resume_text(run):
     """What a new session needs to carry the run on: where it stands, each step, what to do next."""
     lines = [summary(run)]
+    for step in run.get("plan", []):  # the names, for the tester and the reviewer (the summary only counts them)
+        files = (step.get("report") or {}).get("files")
+        if files:
+            lines.append(f"File của bước {step['name']}: {', '.join(files)}")
     lines.append(f"Thư mục làm việc: {run.get('cwd') or '—'} · phiếu: {run.get('estimate_id') or 'chưa có'}")
     nxt = next_steps(run)
     if run.get("finished_at"):
