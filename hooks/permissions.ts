@@ -7,10 +7,14 @@ export type RoleProfile = {
   write: string[]; ask_write: string[]; bash: string[]; outside: 'deny' | 'ask'
   /** false: the role's limits are switched off from the pane; the always-ask commands still ask. */
   enabled?: boolean
+  /** 0.20: MCP tools the engine does not mark read-only — allow (the default, as before) | ask | deny; and the
+   *  tool-name globs let through whatever `mcp` says. */
+  mcp?: 'allow' | 'ask' | 'deny'
+  mcp_allow?: string[]
 }
 export type Profile = {
   common: { bash: string[] }
-  always_ask: { bash: string[] }
+  always_ask: { bash: string[]; mcp?: string[] }
   roles: Record<string, RoleProfile>
   agent_role: Record<string, string>
   /** M4: per-role token caps without an estimate, and the model each role should run (policy.toml). */
@@ -174,6 +178,17 @@ export function judge(
     if (matchesAny(rel, role.ask_write)) return { decision: 'ask', reason: `Vai ${roleName}: ghi ${rel} phải hỏi` }
     if (matchesAny(rel, role.write)) return undefined
     return outside(`Vai ${roleName} chỉ ghi ${listed(role.write)} — không ghi ${rel}`)
+  }
+  if (tool.startsWith('mcp__')) {
+    // 0.20: a read-only MCP tool always runs; a name on the always-ask list asks; the rest follows the role's `mcp`.
+    if (isReadOnly) return undefined
+    const short = tool.split('__').slice(2).join('__') || tool
+    const risky = (profile.always_ask.mcp ?? []).find(pattern => new RegExp(pattern, 'i').test(short))
+    if (risky) return { decision: 'ask', reason: `Tool MCP luôn phải hỏi (${risky}): ${short}` }
+    const mode = role.mcp ?? 'allow'
+    if (off || mode === 'allow' || matchesAny(tool, role.mcp_allow ?? [])) return undefined
+    return { decision: mode, reason: `Vai ${roleName} ${mode === 'deny' ? 'không được gọi' : 'phải hỏi khi gọi'} tool MCP ` +
+      `không phải chỉ đọc: ${tool}` }
   }
   if (!SHELL_TOOLS.has(tool)) return undefined
   const command = String(input.command ?? '')

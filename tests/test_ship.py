@@ -56,11 +56,11 @@ class ShipTest(unittest.TestCase):
         ship.set_stage(run["id"], 3, estimate_id="est-1",
                        plan=[{"name": "API", "role": "developer", "mode": "subagent"}, {"name": "Test", "mode": "subagent"}],
                        limits=LIMITS)
-        ship.set_step(run["id"], "API", "running")
+        code = ship.set_step(run["id"], "API", "running")["plan"][0]["attempt"]
         brief = ship.brief(ship.for_session("s-1"))
         self.assertEqual((brief["stage"], brief["stage_name"], brief["steps"], brief["running"]),
                          (3, "Chạy", 2, ["API"]))
-        ship.set_step(run["id"], "API", "done")
+        ship.set_step(run["id"], "API", "done", attempt=code)
         done = ship.finish(run["id"], "ok", check={"p50": 4e6, "p90": 9e6, "actual": 5e6, "ratio": 1.25,
                                                    "within_p90": True, "title": "x"})
         self.assertEqual((done["stage"], done["result"], done["check"]["ratio"]), (6, "ok", 1.25))
@@ -70,6 +70,197 @@ class ShipTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ship.load("../evil")
         self.assertIsNone(ship.for_session("nobody"))
+
+    def _run_with(self, steps, session="s-1"):
+        run = ship.start("Việc", session, "C:/repo")
+        return ship.set_stage(run["id"], 3, plan=steps, limits=LIMITS)["id"]
+
+    def test_plan_needs_unknown_self_duplicate_and_loop(self):
+        plan = ship.check_plan([{"name": "A"}, {"name": "B", "needs": ["A", "A"]}], LIMITS)
+        self.assertEqual([s["needs"] for s in plan], [[], ["A"]])
+        for steps, message in (
+                ([{"name": "A", "needs": ["Ghost"]}], "không có trong kế hoạch"),
+                ([{"name": "A", "needs": ["A"]}], "chính nó"),
+                ([{"name": "A"}, {"name": "A"}], "trùng tên"),
+                ([{"name": "A", "needs": "B"}, {"name": "B"}], "danh sách"),
+                ([{"name": "A", "needs": ["C"]}, {"name": "B", "needs": ["A"]}, {"name": "C", "needs": ["B"]}], "vòng")):
+            with self.assertRaisesRegex(ValueError, message):
+                ship.check_plan(steps, LIMITS)
+
+    def test_next_steps_follow_needs(self):
+        run_id = self._run_with([{"name": "API"}, {"name": "UI"}, {"name": "Test", "needs": ["API", "UI"]}])
+        nxt = ship.next_steps(ship.load(run_id))
+        self.assertEqual([s["name"] for s in nxt["ready"]], ["API", "UI"])
+        self.assertEqual(nxt["waiting"], [{"name": "Test", "on": ["API", "UI"]}])
+        with self.assertRaisesRegex(ValueError, "còn chờ: API, UI"):
+            ship.set_step(run_id, "Test", "running")
+        code = ship.set_step(run_id, "API", "running")["plan"][0]["attempt"]
+        ship.set_step(run_id, "API", "done", attempt=code)
+        ship.set_step(run_id, "UI", "skipped")
+        nxt = ship.next_steps(ship.load(run_id))
+        self.assertEqual(([s["name"] for s in nxt["ready"]], nxt["waiting"], nxt["all_over"]), (["Test"], [], False))
+        ship.set_step(run_id, "Test", "done")
+        self.assertTrue(ship.next_steps(ship.load(run_id))["all_over"])
+
+    def test_attempt_codes_refuse_a_stale_report(self):
+        run_id = self._run_with([{"name": "API"}])
+        first = ship.set_step(run_id, "API", "running")["plan"][0]["attempt"]
+        self.assertRegex(first, r"^a1-[0-9a-f]{4}$")
+        with self.assertRaisesRegex(ValueError, f"--attempt {first}"):
+            ship.set_step(run_id, "API", "done")
+        ship.set_step(run_id, "API", "failed", attempt=first, note="test trượt")
+        second = ship.set_step(run_id, "API", "running")["plan"][0]["attempt"]
+        self.assertTrue(second.startswith("a2-"))
+        with self.assertRaisesRegex(ValueError, "lần thử cũ"):
+            ship.set_step(run_id, "API", "done", attempt=first)
+        with self.assertRaisesRegex(ValueError, "không có"):
+            ship.set_step(run_id, "API", "done", attempt="a9-zzzz")
+        self.assertEqual(ship.load(run_id)["plan"][0]["status"], "running")  # refused reports change nothing
+        step = ship.set_step(run_id, "API", "done", attempt=second, files=["src/a.py", "src/b.py"],
+                             tests="12 pass, 0 fail")["plan"][0]
+        self.assertEqual((step["status"], step["attempt"], step["attempts"]), ("done", None, 2))
+        self.assertEqual([t["status"] for t in step["tries"]], ["failed", "done"])
+        self.assertEqual(step["report"], {"files": ["src/a.py", "src/b.py"], "tests": "12 pass, 0 fail"})
+        with self.assertRaisesRegex(ValueError, "đã đóng"):
+            ship.set_step(run_id, "API", "failed", attempt=second)
+        run = ship.load(run_id)
+        self.assertEqual(ship.brief(run)["retries"], 1)
+        self.assertIn("2 lần thử · 2 file · test: 12 pass, 0 fail", ship.summary(run))
+
+    def test_restart_and_reset_give_up_the_open_try(self):
+        run_id = self._run_with([{"name": "API"}])
+        first = ship.set_step(run_id, "API", "running")["plan"][0]["attempt"]
+        step = ship.set_step(run_id, "API", "running")["plan"][0]
+        self.assertEqual((step["attempts"], step["tries"][0]["status"]), (2, "abandoned"))
+        with self.assertRaisesRegex(ValueError, "lần thử cũ"):
+            ship.set_step(run_id, "API", "done", attempt=first)
+        step = ship.set_step(run_id, "API", "pending")["plan"][0]
+        self.assertEqual((step["attempt"], step["tries"][1]["status"]), (None, "abandoned"))
+
+    def test_run_written_before_attempt_codes_still_works(self):
+        run_id = self._run_with([{"name": "API"}])
+        run = ship.load(run_id)
+        run["plan"] = [{"name": "API", "role": None, "mode": "main", "files": [], "done": "", "tokens": None,
+                        "status": "running"}]  # 0.18 shape: no needs, no attempt
+        ship.save(run)
+        self.assertEqual(ship.next_steps(run)["running"], [{"name": "API", "attempt": None}])
+        self.assertEqual(ship.set_step(run_id, "API", "done")["plan"][0]["status"], "done")
+
+    def test_resume_attaches_the_run_and_says_what_is_next(self):
+        run_id = self._run_with([{"name": "API"}, {"name": "UI"}, {"name": "Test", "needs": ["API", "UI"]}], "old")
+        code = ship.set_step(run_id, "API", "running")["plan"][0]["attempt"]
+        self.assertEqual([r["id"] for r in ship.unfinished()], [run_id])
+        text = self.run_cli("ship-resume", run_id, "--session", "new")
+        self.assertIn(f"API [{code}]", text)
+        self.assertIn("Chạy được ngay: UI", text)
+        self.assertIn("Test ← API, UI", text)
+        run = ship.load(run_id)
+        self.assertEqual((run["session_id"], run["past_sessions"]), ("new", ["old"]))
+        self.assertEqual(ship.for_session("new")["id"], run_id)
+        self.assertIn(run_id, self.run_cli("ship-resume"))
+        ship.finish(run_id, "partial")
+        self.assertEqual(ship.unfinished(), [])
+        self.assertIn("Không có lượt nào đang dở", self.run_cli("ship-resume"))
+        self.assertIn("đã kết thúc", self.run_cli("ship-resume", run_id, "--session", "third"))
+        self.assertEqual(ship.load(run_id)["session_id"], "new")  # a finished run is not taken over
+
+    def test_cli_step_attempt_files_and_next(self):
+        run_id = self._run_with([{"name": "API"}, {"name": "Test", "needs": ["API"]}])
+        self.assertIn("Chạy được ngay: API", self.run_cli("ship-next", run_id))
+        out = self.run_cli("ship-step", run_id, "--name", "API", "--status", "running")
+        code = ship.load(run_id)["plan"][0]["attempt"]
+        self.assertIn(f"--attempt {code}", out)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            self.run_cli("ship-step", run_id, "--name", "API", "--status", "done")
+        self.assertIn(code, err.getvalue())
+        out = json.loads(self.run_cli("ship-step", run_id, "--name", "API", "--status", "done", "--attempt", code,
+                                      "--file", "a.py", "--file", "b.py", "--tests", "3 pass", "--json"))
+        self.assertEqual(out["plan"][0]["report"], {"files": ["a.py", "b.py"], "tests": "3 pass"})
+        nxt = json.loads(self.run_cli("ship-next", run_id, "--json"))
+        self.assertEqual(([s["name"] for s in nxt["ready"]], nxt["waiting"]), (["Test"], []))
+
+    def _fail(self, run_id, name, escalation):
+        code = next(s for s in ship.set_step(run_id, name, "running")["plan"] if s["name"] == name)["attempt"]
+        return next(s for s in ship.set_step(run_id, name, "failed", attempt=code, escalation=escalation)["plan"]
+                    if s["name"] == name)
+
+    def test_escalation_policy_reads_and_refuses(self):
+        policy = {"roles": {"developer": {"model": "sonnet", "effort": "medium"}},
+                  "escalation": {"ladder": ["sonnet:medium", "opus:high"], "fail_threshold": 1}}
+        self.assertEqual(ship.escalation_policy(policy), {
+            "ladder": [("sonnet", "medium"), ("opus", "high")], "fail_threshold": 1,
+            "roles": {"developer": ("sonnet", "medium")}})
+        self.assertEqual(ship.escalation_policy({})["ladder"], [])
+        for bad in ({"ladder": ["gpt:high"]}, {"ladder": ["opus"]}, {"ladder": ["opus:huge"]},
+                    {"fail_threshold": 0}, {"fail_threshold": True}):
+            with self.assertRaisesRegex(ValueError, "escalation"):
+                ship.escalation_policy({"escalation": bad})
+
+    def test_failed_step_climbs_the_ladder_from_its_role(self):
+        esc = {"ladder": [("sonnet", "medium"), ("sonnet", "high"), ("opus", "high")], "fail_threshold": 2,
+               "roles": {"developer": ("sonnet", "medium"), "reviewer": ("opus", "medium"), "docs": ("haiku", "low")}}
+        run_id = self._run_with([{"name": "API", "role": "developer"}, {"name": "Rev", "role": "reviewer"},
+                                 {"name": "Doc", "role": "docs"}, {"name": "Solo"}])
+        self.assertNotIn("escalate", self._fail(run_id, "API", esc))  # 1 failure, threshold 2
+        step = self._fail(run_id, "API", esc)
+        self.assertEqual(step["escalate"], {"model": "sonnet", "effort": "high", "failures": 2})
+        self.assertIn("chạy lại bằng sonnet:high", ship.summary(ship.load(run_id)))
+        self.assertEqual(ship.brief(ship.load(run_id))["escalate"],
+                         [{"name": "API", "model": "sonnet", "effort": "high", "failures": 2}])
+        self._fail(run_id, "API", esc)
+        step = self._fail(run_id, "API", esc)
+        self.assertEqual(step["escalate"], {"model": "opus", "effort": "high", "failures": 4})
+        self.assertEqual((step["tries"][2]["model"], step["tries"][2]["effort"]), ("sonnet", "high"))  # ran on the rung
+        self.assertNotIn("model", step["tries"][0])
+        self._fail(run_id, "API", esc)
+        self.assertEqual(self._fail(run_id, "API", esc)["escalate"], {"exhausted": True, "failures": 6})
+        self.assertIn("hết thang nâng model", ship.summary(ship.load(run_id)))
+        # a role whose exact rung is not on the ladder starts at the first rung of its model
+        self._fail(run_id, "Rev", esc)
+        self.assertEqual(self._fail(run_id, "Rev", esc)["escalate"], {"exhausted": True, "failures": 2})
+        # a model not on the ladder, or no role: starts below it
+        self._fail(run_id, "Doc", esc)
+        self.assertEqual(self._fail(run_id, "Doc", esc)["escalate"]["model"], "sonnet")
+        self._fail(run_id, "Solo", esc)
+        self.assertEqual(self._fail(run_id, "Solo", esc)["escalate"],
+                         {"model": "sonnet", "effort": "medium", "failures": 2})
+        # done clears the advice; no ladder, no advice
+        code = ship.set_step(run_id, "Solo", "running")["plan"][3]["attempt"]
+        self.assertNotIn("escalate", ship.set_step(run_id, "Solo", "done", attempt=code, escalation=esc)["plan"][3])
+        self.assertIsNone(ship.escalate({"tries": [{"status": "failed"}] * 5}, {**esc, "ladder": []}))
+
+    def test_cli_step_failed_prints_the_next_rung(self):
+        run_id = self._run_with([{"name": "API", "role": "developer"}])
+        policy = Path(self.home.name, "policy.toml")
+        policy.write_text('[roles]\ndeveloper = { model = "sonnet", effort = "medium" }\n'
+                          '[escalation]\nladder = ["sonnet:medium", "opus:high"]\nfail_threshold = 1\n', encoding="utf-8")
+        out = ""
+        for _ in range(2):
+            self.run_cli("ship-step", run_id, "--name", "API", "--status", "running")
+            out = self.run_cli("ship-step", run_id, "--name", "API", "--status", "failed", "--attempt",
+                               ship.load(run_id)["plan"][0]["attempt"], "--policy", str(policy))
+            if "opus" in out:
+                self.assertIn("↑ Bước API lỗi 1 lần: chạy lại với model opus, effort high", out)
+        self.assertIn("‼ Bước API lỗi 2 lần và đã hết thang nâng model", out)
+        policy.write_text('[escalation]\nladder = ["gpt:high"]\n', encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            self.run_cli("ship-step", run_id, "--name", "API", "--status", "running", "--policy", str(policy))
+        self.assertIn("model:effort", err.getvalue())
+
+    def test_stalled_needs_a_quiet_open_try(self):
+        run_id = self._run_with([{"name": "API"}, {"name": "UI"}])
+        ship.set_step(run_id, "API", "running", now="2026-11-18T09:00:00+00:00")
+        run = ship.load(run_id)
+        start = 1794992400.0  # 2026-11-18T09:00:00Z
+        self.assertEqual(ship.stalled(run, start - 3600, 10, now=start + 9 * 60), [])       # started 9 minutes ago
+        self.assertEqual(ship.stalled(run, start - 3600, 10, now=start + 25 * 60), [{"name": "API", "minutes": 25}])
+        self.assertEqual(ship.stalled(run, start + 20 * 60, 10, now=start + 25 * 60), [])   # someone wrote 5 min ago
+        self.assertEqual(ship.stalled(run, start - 3600, 0, now=start + 25 * 60), [])       # switched off
+        self.assertEqual(ship.stalled(run, None, 10, now=start + 25 * 60), [])              # no transcript known
+        self.assertEqual(ship.brief(run, [{"name": "API", "minutes": 25}])["stalled"], [{"name": "API", "minutes": 25}])
+        self.assertEqual(ship.brief(ship.finish(run_id, "failed"), [{"name": "API", "minutes": 25}])["stalled"], [])
 
     def test_cli_start_stage_step_finish(self):
         started = json.loads(self.run_cli("ship-start", "--title", "Trang báo cáo", "--session", "s-9", "--cwd", "C:/r"))

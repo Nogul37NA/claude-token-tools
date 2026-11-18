@@ -57,6 +57,10 @@ export type ShipSnap = {
   cwd?: string
   stepsDone: number; steps: number; failed: number; running: string[]; result?: string
   check?: { actual?: number; p50?: number; ratio?: number; within_p90?: boolean }
+  /** 0.20: running steps with no transcript activity for [workflow] stall_minutes; failed steps the [escalation]
+   *  ladder sends to another model (or that ran out of ladder). */
+  stalled?: { name: string; minutes: number }[]
+  escalate?: { name: string; model?: string; effort?: string; exhausted?: boolean }[]
 }
 export type UsageSnap = {
   at: number

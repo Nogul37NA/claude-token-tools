@@ -114,14 +114,15 @@ export function parseAgentUsage(stdout: string): Pick<UsageSnap, 'agents' | 'tot
     budget?: { id: string; title: string; budget_tokens: number; used_tokens: number; p50_tokens: number; p90_tokens: number
       steps?: { role: string; share: number }[] } | null
     ship?: { id: string; title: string; cwd?: string | null; stage: number; stage_name: string; stages: number; steps_done: number
-      steps: number; failed: number; running: string[]; result?: string | null; check?: ShipSnap['check'] | null } | null
+      steps: number; failed: number; running: string[]; result?: string | null; check?: ShipSnap['check'] | null
+      stalled?: ShipSnap['stalled']; escalate?: ShipSnap['escalate'] } | null
   }
   if (!data.agents || !data.total) throw new Error('agent-usage: JSON thiếu agents / total')
   const s = data.ship
   const ship: ShipSnap | undefined = s
     ? { id: s.id, title: s.title, cwd: s.cwd ?? undefined, stage: s.stage, stageName: s.stage_name, stages: s.stages, stepsDone: s.steps_done,
         steps: s.steps, failed: s.failed, running: s.running ?? [], result: s.result ?? undefined,
-        check: s.check ?? undefined }
+        check: s.check ?? undefined, stalled: s.stalled ?? [], escalate: s.escalate ?? [] }
     : undefined
   const budget = data.budget
     ? { id: data.budget.id, title: data.budget.title, budgetTokens: data.budget.budget_tokens,
@@ -163,6 +164,18 @@ export async function openShipReport($: EngineInterface): Promise<void> {
     shipReport.busy = false
     $.ui.invalidate('ui.render')
   }
+}
+
+/** 0.20: what a /token-tools:ship run needs the person (or the main loop) to look at: steps nobody is working
+ *  on, and failed steps with the model the ladder says to run them again on. */
+export function shipAlerts(ship: ShipSnap): string[] {
+  return [
+    ...(ship.stalled ?? []).map(step => `⚠ Bước ${step.name} đang ghi là chạy nhưng không ai hoạt động ${step.minutes} phút — ` +
+      'agent có thể đã dừng'),
+    ...(ship.escalate ?? []).map(step => step.exhausted
+      ? `‼ Bước ${step.name} đã hết thang nâng model — dừng, ghi thành việc mở`
+      : `↑ Bước ${step.name} lỗi nhiều lần — chạy lại bằng ${step.model}:${step.effort}`),
+  ]
 }
 
 /** One line for the pane: where the /token-tools:ship run stands. */
@@ -1207,7 +1220,7 @@ export const register: Register = on => {
     const composed = await next(e)
     const table = await loadThresholds($)
     if (!table?.hint_model) return composed
-    return { ...composed, sections: [...composed.sections, { id: 'token-tools-delegation', text: hintSection(table),
+    return { ...composed, sections: [...composed.sections, { id: 'token-tools:delegation', text: hintSection(table),
       scope: 'session' }] }
   }).catch(($, e, next) => next(e))
 
@@ -1315,6 +1328,7 @@ export const register: Register = on => {
     const working = rows.filter(row => row.status === 'running').length
     const problems = rows.reduce((sum, row) => sum + row.errors + (row.blocked ?? 0), 0)
     const urgent = attention(log, now)
+    const shipNeeds = snap.ship && !snap.ship.result ? shipAlerts(snap.ship) : []
     const profile = showRoles ? await loadProfile($) : undefined
     const activeRoles = [...new Set(rows.map(row => row.role).filter((role): role is string => !!role))]
     const shownRoles = profile ? (showAllRoles || activeRoles.length === 0 ? Object.keys(profile.roles) : activeRoles) : []
@@ -1344,11 +1358,12 @@ export const register: Register = on => {
           </Text>
           <Text color={problems ? 'error' : 'subtle'}>{problems ? `${problems} lỗi / bị chặn` : 'không có lỗi'}</Text>
         </Box>
-        {(urgent.length > 0 || nudge) && (
+        {(urgent.length > 0 || nudge || shipNeeds.length > 0) && (
           <Box key="attention" flexDirection="column" borderStyle="round" paddingX={1}
             borderColor={urgent.some(event => event.text.startsWith('⛔')) ? 'error' : 'warning'}>
             <Text weight="semibold">Cần chú ý</Text>
             {nudge && <Text color="warning" wrap="wrap">{nudge}</Text>}
+            {shipNeeds.map(line => <Text color="warning" wrap="wrap">{line}</Text>)}
             {urgent.map(event => (
               <Text color={eventTone(event.text)} wrap="wrap">
                 {event.text} <Text dimColor>· {ago(now - event.at)} trước</Text>

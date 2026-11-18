@@ -32,6 +32,27 @@ def _spend(parts, usd):
             "cache_read_pct": round(100 * parts["cache_read"] / tokens, 1) if tokens else 0.0}
 
 
+def _stalled(projects_dir, session_id, run):
+    """The run's running steps with no transcript written to (this session, its agents, its child sessions) for
+    [workflow] stall_minutes. A broken policy never breaks the pane's figures: nothing is reported then."""
+    if not run or run.get("finished_at"):
+        return []
+    from ctt import ship
+    from ctt.policy import load_policy
+    try:
+        minutes = ship.settings(load_policy(None))["stall_minutes"]
+    except (ValueError, OSError):
+        return []
+    newest = None
+    for sid in [session_id, *run.get("children", [])]:
+        for path in session_files(projects_dir, sid).values():
+            try:
+                newest = max(newest or 0, path.stat().st_mtime)
+            except OSError:
+                continue
+    return ship.stalled(run, newest, minutes)
+
+
 def agent_usage(projects_dir, session_id, prices, state_dir=None):
     """{'session': id, 'agents': {id: {tokens, usd}}, 'total': {...}, 'budget': {...} | None}."""
     state_dir = Path(state_dir or config.ctt_home() / "live_state")
@@ -69,10 +90,12 @@ def agent_usage(projects_dir, session_id, prices, state_dir=None):
                   "p50_tokens": est["tokens"]["p50"], "p90_tokens": est["tokens"]["p90"], "used_tokens": used,
                   "steps": [{"role": s["role"], "share": s["share"]} for s in est["parts"][0]["steps"]]}
     from ctt import ship
+    run = ship.for_session(session_id)
     return {
         "session": session_id,
         "agents": agents,
         "total": _spend(total_parts, sum(state[a]["usd"] for a in agents)),
         "budget": budget,
-        "ship": ship.brief(ship.for_session(session_id)),  # 0.17: the session's /token-tools:ship run, if any
+        # 0.17: the session's /token-tools:ship run, if any; 0.20: with the running steps nobody is working on
+        "ship": ship.brief(run, _stalled(projects_dir, session_id, run)),
     }

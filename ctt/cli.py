@@ -193,7 +193,7 @@ def cmd_permissions_set(args):
     from ctt import permissions
     try:
         profile = permissions.set_role(
-            args.role, outside=args.outside,
+            args.role, outside=args.outside, mcp=args.mcp,
             enabled=None if args.enabled is None else args.enabled == "true",
             add=tuple(args.add) if args.add else None, remove=tuple(args.remove) if args.remove else None,
             reset=args.reset)
@@ -244,26 +244,30 @@ def _ship_fail(error):
 def cmd_ship_start(args):
     import json
     from ctt import ship
-    from ctt.estimate import ledger
     try:
         limits = _ship_limits(args)
     except ValueError as error:
         _ship_fail(error)
-    session = None
-    if args.session == "auto":
-        found = ledger.current_session(args.projects_dir, Path(args.cwd))
-        if not found:
-            # The work folder is not the session's own (0.17.1+): the session running this is the transcript
-            # written to in the last two minutes, newest first.
-            import time
-            recent = [p for p in Path(args.projects_dir).glob("*/*.jsonl") if time.time() - p.stat().st_mtime < 120]
-            newest = max(recent, key=lambda p: p.stat().st_mtime, default=None)
-            found = (newest.stem,) if newest else None
-        session = found[0] if found else None
-    elif args.session != "none":
-        session = args.session
-    run = ship.start(args.title, session, args.cwd)
+    run = ship.start(args.title, _ship_session(args), args.cwd)
     print(json.dumps({"run": run, "workflow": limits, "stages": list(ship.STAGES)}, ensure_ascii=False, indent=1))
+
+
+def _ship_session(args):
+    """--session auto | none | <id> → the session id, or None."""
+    from ctt.estimate import ledger
+    if args.session == "none":
+        return None
+    if args.session != "auto":
+        return args.session
+    found = ledger.current_session(args.projects_dir, Path(args.cwd))
+    if not found:
+        # The work folder is not the session's own (0.17.1+): the session running this is the transcript
+        # written to in the last two minutes, newest first.
+        import time
+        recent = [p for p in Path(args.projects_dir).glob("*/*.jsonl") if time.time() - p.stat().st_mtime < 120]
+        newest = max(recent, key=lambda p: p.stat().st_mtime, default=None)
+        found = (newest.stem,) if newest else None
+    return found[0] if found else None
 
 
 def cmd_ship_stage(args):
@@ -283,10 +287,67 @@ def cmd_ship_stage(args):
 def cmd_ship_step(args):
     from ctt import ship
     try:
-        run = ship.set_step(args.id, args.name, args.status, args.note)
+        escalation = ship.escalation_policy(load_policy(args.policy))
+        run = ship.set_step(args.id, args.name, args.status, args.note, args.attempt, args.file, args.tests,
+                            escalation=escalation)
     except ValueError as error:
         _ship_fail(error)
     _ship_out(run, args.json)
+    advice = next(s.get("escalate") for s in run["plan"] if s["name"] == args.name)
+    if args.status == "failed" and advice and not args.json:
+        if advice.get("exhausted"):
+            print(f"‼ Bước {args.name} lỗi {advice['failures']} lần và đã hết thang nâng model ([escalation] ladder): "
+                  "dừng bước này, ghi thành việc mở")
+        else:
+            print(f"↑ Bước {args.name} lỗi {advice['failures']} lần: chạy lại với model {advice['model']}, "
+                  f"effort {advice['effort']} (tham số model / effort khi gọi agent)")
+    if args.status == "running" and not args.json:
+        code = next(s["attempt"] for s in run["plan"] if s["name"] == args.name)
+        print(f"Mã lần thử của bước {args.name}: {code} — báo xong / lỗi phải kèm --attempt {code}")
+
+
+def cmd_ship_next(args):
+    import json
+    from ctt import ship
+    try:
+        nxt = ship.next_steps(ship.load(args.id))
+    except ValueError as error:
+        _ship_fail(error)
+    if args.json:
+        print(json.dumps(nxt, ensure_ascii=False))
+        return
+    print("Chạy được ngay: " + (", ".join(f"{s['name']} ({s.get('role') or '—'}, {s['mode']})" for s in nxt["ready"]) or "—"))
+    if nxt["running"]:
+        print("Đang chạy: " + ", ".join(f"{s['name']} [{s['attempt'] or 'không mã'}]" for s in nxt["running"]))
+    if nxt["waiting"]:
+        print("Còn chờ: " + "; ".join(f"{s['name']} ← {', '.join(s['on'])}" for s in nxt["waiting"]))
+    if nxt["failed"]:
+        print("Lỗi: " + ", ".join(f"{s['name']} ({s['attempts']} lần thử)" for s in nxt["failed"]))
+    if nxt["all_over"]:
+        print("Mọi bước đã xong.")
+
+
+def cmd_ship_resume(args):
+    import json
+    from ctt import ship
+    if not args.id:
+        runs = ship.unfinished()
+        if args.json:
+            print(json.dumps([ship.brief(run) for run in runs], ensure_ascii=False))
+            return
+        if not runs:
+            print("Không có lượt nào đang dở.")
+        for run in runs:
+            print(f"{run['id']} · {run['title']} · bước {run['stage']} {ship.STAGES[run['stage']]} · {run.get('cwd') or '—'}")
+        return
+    try:
+        run = ship.attach(args.id, _ship_session(args)) if not ship.load(args.id).get("finished_at") else ship.load(args.id)
+    except ValueError as error:
+        _ship_fail(error)
+    if args.json:
+        print(json.dumps({"run": run, "next": ship.next_steps(run)}, ensure_ascii=False))
+        return
+    print(ship.resume_text(run))
 
 
 def cmd_ship_finish(args):
@@ -432,8 +493,9 @@ def main(argv=None):
     command = sub.add_parser("permissions-set", help="sửa quyền một vai trong bản riêng của máy (cho khung) → JSON")
     command.add_argument("--role", required=True)
     command.add_argument("--outside", choices=("deny", "ask"))
+    command.add_argument("--mcp", choices=("allow", "ask", "deny"), help="tool MCP không phải chỉ đọc")
     command.add_argument("--enabled", choices=("true", "false"))
-    command.add_argument("--add", nargs=2, metavar=("DANH_SÁCH", "GIÁ_TRỊ"), help="write | ask_write | bash")
+    command.add_argument("--add", nargs=2, metavar=("DANH_SÁCH", "GIÁ_TRỊ"), help="write | ask_write | bash | mcp_allow")
     command.add_argument("--remove", nargs=2, metavar=("DANH_SÁCH", "GIÁ_TRỊ"))
     command.add_argument("--reset", action="store_true", help="bỏ phần ghi đè của vai, về mặc định")
     command.set_defaults(handler=cmd_permissions_set)
@@ -471,8 +533,25 @@ def main(argv=None):
     command.add_argument("--name", required=True)
     command.add_argument("--status", required=True, choices=("pending", "running", "done", "failed", "skipped"))
     command.add_argument("--note")
+    command.add_argument("--attempt", help="mã lần thử nhận được lúc --status running; bắt buộc khi báo done / failed")
+    command.add_argument("--file", action="append", help="file bước này đã đổi (lặp được) — ghi cùng done / failed")
+    command.add_argument("--tests", help="kết quả test của bước, một dòng (vd '12 pass, 0 fail')")
+    command.add_argument("--policy")
     command.add_argument("--json", action="store_true")
     command.set_defaults(handler=cmd_ship_step)
+
+    command = sub.add_parser("ship-next", help="bước nào chạy được ngay, đang chạy, còn chờ bước nào, lỗi")
+    command.add_argument("id")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_ship_next)
+
+    command = sub.add_parser("ship-resume", help="chạy tiếp một lượt dở ở phiên này; không có id: liệt kê các lượt dở")
+    command.add_argument("id", nargs="?")
+    command.add_argument("--cwd", default=str(Path.cwd()))
+    command.add_argument("--session", default="auto", help="auto (phiên đang chạy lệnh) | none | <session id>")
+    command.add_argument("--projects-dir", default=str(config.projects_dir()))
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_ship_resume)
 
     command = sub.add_parser("ship-finish", help="kết thúc lượt: so phiếu với thực tế, ghi kết quả")
     command.add_argument("id")

@@ -44,8 +44,10 @@ researcher      = "research"
 tester          = "tester"
 
 # Thứ tự nâng model khi một subtask thất bại (compile/test trượt 2 lần, reviewer chặn, hết 80% ngân sách
-# mà không tiến triển). lệnh sync KHÔNG dùng mục này — dành cho Router/orchestrator (P2/P3).
-# Nâng model = mở phiên mới kèm tóm tắt, không đổi model giữa phiên (cache gắn theo model).
+# mà không tiến triển). Lệnh sync KHÔNG dùng mục này. Từ 0.20.0 /token-tools:ship dùng: một bước lỗi đủ
+# fail_threshold lần thì `ctt ship-step --status failed` in model và effort của nấc kế (tính từ nấc của vai trong
+# [roles]); hết thang thì bước dừng, ghi thành việc mở.
+# Nâng model = chạy lại bước bằng agent mới ở model đó, không đổi model giữa chừng (cache gắn theo model).
 [escalation]
 ladder = ["sonnet:medium", "sonnet:high", "opus:high", "fable:high"]
 fail_threshold = 2
@@ -102,6 +104,7 @@ max_steps = 8                   # số dòng tối đa của bảng chia việc
 fix_rounds = 2                  # số vòng kiểm chứng → sửa trước khi giao phần còn lại là việc mở
 session_min_tokens = 2_000_000  # bước ước dưới chừng này token không được mở phiên con (giao subagent)
 auto_approve_usd = 0.0          # 0: luôn hỏi duyệt lần 1; > 0: phiếu có ngân sách ≤ chừng này $ thì tự duyệt
+stall_minutes = 10              # bước đang chạy mà phiên, agent, phiên con đều im chừng này phút → khung báo treo; 0: tắt
 
 [hooks]
 enabled = true
