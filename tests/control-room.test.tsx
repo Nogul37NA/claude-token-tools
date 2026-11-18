@@ -688,6 +688,43 @@ test('0.23: in Auto mode, [auto_mode] ask = "deny" turns what would ask into a r
   await ui.unmount()
 })
 
+test('0.23.1: a hand edit of the profile is picked up by the background re-read; a failed re-read keeps the old one', async ($, on) => {
+  resetProfile()
+  engine(on)
+  let served: unknown = PROFILE
+  let broken = false
+  let reads = 0
+  on('process.run', (_, e) => (e.argv.includes('permissions') && (reads += 1), { value: broken && e.argv.includes('permissions')
+    ? { exitCode: 1, stdout: '', stderr: 'bad toml', isStdoutTruncated: false, isStderrTruncated: false }
+    : { exitCode: 0, stdout: e.argv.includes('permissions') ? JSON.stringify(served) : AGENT_USAGE, stderr: '',
+        isStdoutTruncated: false, isStderrTruncated: false } }))
+  await $.session.start({ cwd: 'C:/repo', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'x', description: 'tester', subagentType: 'tester' })
+  const refused = async () => JSON.stringify(await $.tool.call({ tool: 'Write', file_path: 'C:/repo/notes.txt', content: 'x',
+    agentId: 'a1' })).includes('Vai tester chỉ ghi')
+  // the test clock moves 1.5 s a reading and each main-loop call reads it twice: 30 calls are well over a minute
+  const later = async () => { for (let i = 0; i < 30; i++) await $.tool.call({ tool: 'Grep', pattern: 'x' }) }
+  const tick = () => new Promise(resolve => setTimeout(resolve, 50))
+  expect(await refused()).toBe(true) // the tester may not write notes.txt
+  // the file is edited by hand: the tester may now write anywhere
+  served = { ...PROFILE, roles: { ...PROFILE.roles, tester: { ...PROFILE.roles.tester, write: ['**'] } } }
+  expect(await refused()).toBe(true) // not yet due: the held profile judges
+  expect(reads).toBe(1)
+  await later()
+  await refused() // this call still sees the held one, and starts the re-read
+  await tick()
+  expect(reads).toBe(2)
+  expect(await refused()).toBe(false)
+  // a re-read that fails changes nothing: the last good profile keeps judging
+  broken = true
+  await later()
+  await refused()
+  await tick()
+  expect(reads).toBeGreaterThan(2)
+  expect(await refused()).toBe(false)
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'npm install', agentId: 'a1' }))).toContain('Vai tester không được chạy')
+})
+
 test('M3: a developer writing a migration, or pushing, is put to a person', async ($, on) => {
   resetProfile()
   engine(on)
