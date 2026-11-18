@@ -31,6 +31,18 @@ tester    = { model = "sonnet", effort = "medium" }
 research  = { model = "sonnet", effort = "medium" }
 docs      = { model = "sonnet", effort = "low" }
 
+# Khi nào dùng vai nào (0.22.0): `ctt ship-start` in kèm model / effort của vai để bảng chia việc của
+# /token-tools:ship chọn vai theo ghi chú này thay vì đoán theo tên. Sửa cho hợp cách làm của team.
+[role_notes]
+planner   = "Việc > 3 bước hoặc repo lạ: khảo sát code, chia bước, nêu rủi ro. Không dùng cho việc đã rõ cách làm."
+architect = "Có từ 2 phương án thiết kế đáng cân nhắc (mô hình dữ liệu, tích hợp, kiến trúc). Không dùng để viết code."
+research  = "Cần biết code hay thư viện chạy thế nào, ở đâu, ai gọi ai trước khi sửa. Chỉ đọc, rẻ: dùng thay cho việc phiên chính tự dò nhiều file."
+developer = "Viết, sửa code theo kế hoạch đã chốt. Không giao khi còn câu hỏi thiết kế mở."
+debugger  = "Có lỗi cụ thể để tìm nguyên nhân gốc (log, stack trace, test trượt). Không dùng để thêm tính năng."
+tester    = "Viết và chạy test cho phần vừa đổi; luôn có ở bước kiểm chứng."
+reviewer  = "Đọc diff tìm lỗi và rủi ro trước khi giao; luôn có ở bước kiểm chứng. Không sửa code."
+docs      = "Cập nhật README, changelog, hướng dẫn sau khi code đã ổn."
+
 # Tên agent (tên file .md, bỏ đuôi) → vai. Agent không có ở đây và không trùng tên vai thì bỏ qua.
 [agent_role]
 brainstormer    = "architect"
@@ -105,6 +117,22 @@ fix_rounds = 2                  # số vòng kiểm chứng → sửa trước k
 session_min_tokens = 2_000_000  # bước ước dưới chừng này token không được mở phiên con (giao subagent)
 auto_approve_usd = 0.0          # 0: luôn hỏi duyệt lần 1; > 0: phiếu có ngân sách ≤ chừng này $ thì tự duyệt
 stall_minutes = 10              # bước đang chạy mà phiên, agent, phiên con đều im chừng này phút → khung báo treo; 0: tắt
+
+# Review ngoài (0.22.0): ở bước kiểm chứng của /token-tools:ship, `ctt ship-review` đưa diff của lượt cho agent CLI
+# của một nhà cung cấp KHÁC để có ý kiến độc lập (Claude không tự review Claude). MẶC ĐỊNH TẮT, vì bật là gửi diff
+# sang dịch vụ đó bằng tài khoản của bạn ở đó.
+#   command: chương trình và tham số. Lời nhắc + diff được đưa vào stdin; CLI nào chỉ nhận đường dẫn file thì ghi
+#            {prompt_file} vào chỗ tham số đó. Tự chọn tham số chạy CHỈ ĐỌC / không tự sửa file của CLI bạn dùng
+#            (xem `<chương trình> --help`) — token-tools không kiểm được chương trình đó làm gì.
+# Bật ở ~/.claude/claude-token-tools/policy.toml, ví dụ:
+#   [review]
+#   external = true
+#   command = ["<cli-của-bạn>", "<tham số chạy không tương tác>", "<tham số chỉ đọc>"]
+[review]
+external = false
+command = []
+timeout_seconds = 600           # quá thời hạn thì bỏ qua, review trong nhà vẫn chạy
+max_diff_chars = 120000         # diff dài hơn bị cắt, reviewer được báo là đã cắt
 
 [hooks]
 enabled = true
