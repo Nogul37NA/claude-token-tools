@@ -233,6 +233,8 @@ def _ship_limits(args):
     policy = load_policy(getattr(args, "policy", None))
     limits = ship.settings(policy)
     limits.update(load_permissions(policy_file=getattr(args, "policy", None))["sessions"])
+    from ctt import review
+    limits["external_review"] = review.settings(policy)["external"]  # 0.22: stage 4 runs `ship-review` when true
     return limits
 
 
@@ -248,8 +250,13 @@ def cmd_ship_start(args):
         limits = _ship_limits(args)
     except ValueError as error:
         _ship_fail(error)
+    try:
+        roles = ship.role_notes(load_policy(args.policy))
+    except ValueError as error:
+        _ship_fail(error)
     run = ship.start(args.title, _ship_session(args), args.cwd)
-    print(json.dumps({"run": run, "workflow": limits, "stages": list(ship.STAGES)}, ensure_ascii=False, indent=1))
+    print(json.dumps({"run": run, "workflow": limits, "stages": list(ship.STAGES), "roles": roles},
+                     ensure_ascii=False, indent=1))
 
 
 def _ship_session(args):
@@ -329,6 +336,21 @@ def cmd_ship_next(args):
         print("Lỗi: " + ", ".join(f"{s['name']} ({s['attempts']} lần thử)" for s in nxt["failed"]))
     if nxt["all_over"]:
         print("Mọi bước đã xong.")
+
+
+def cmd_ship_review(args):
+    import json
+    from ctt import review, ship
+    try:
+        run = ship.load(args.id)
+        config = review.settings(load_policy(args.policy))
+        cwd = args.cwd or run.get("cwd") or str(Path.cwd())
+        result = review.run_review(run, config, cwd, args.base)
+        if result["status"] != "off":
+            ship.set_external_review(args.id, result)
+    except ValueError as error:
+        _ship_fail(error)
+    print(json.dumps(result, ensure_ascii=False) if args.json else review.text(result))
 
 
 def cmd_ship_gate(args):
@@ -585,6 +607,15 @@ def main(argv=None):
     command.add_argument("--answer")
     command.add_argument("--json", action="store_true")
     command.set_defaults(handler=cmd_ship_gate)
+
+    command = sub.add_parser("ship-review", help="review diff của lượt bằng agent CLI của nhà cung cấp khác "
+                                                 "([review] của policy; mặc định tắt)")
+    command.add_argument("id")
+    command.add_argument("--base", default="HEAD", help="so thư mục làm việc với ref này (mặc định HEAD: thay đổi chưa commit)")
+    command.add_argument("--cwd", help="repo cần review (mặc định: thư mục làm việc của lượt)")
+    command.add_argument("--policy")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_ship_review)
 
     command = sub.add_parser("ship-resume", help="chạy tiếp một lượt dở ở phiên này; không có id: liệt kê các lượt dở")
     command.add_argument("id", nargs="?")

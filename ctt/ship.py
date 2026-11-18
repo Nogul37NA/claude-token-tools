@@ -108,6 +108,22 @@ def stalled(run, last_activity, minutes, now=None):
     return out
 
 
+def role_notes(policy):
+    """{role: {model, effort, when}} for the plan: what each role runs on and, from [role_notes], when to use it."""
+    notes = policy.get("role_notes", {})
+    bad = [name for name, note in notes.items() if not isinstance(note, str)]
+    if bad:
+        raise ValueError(f"[role_notes] {bad[0]}: cần một chuỗi")
+    return {name: {"model": spec.get("model"), "effort": spec.get("effort"), "when": notes.get(name, "")}
+            for name, spec in policy.get("roles", {}).items() if isinstance(spec, dict)}
+
+
+def set_external_review(run_id, result):
+    run = load(run_id)
+    run["external_review"] = result
+    return save(run)
+
+
 def runs_dir():
     return config.ctt_home() / "ship"
 
@@ -503,6 +519,9 @@ def summary(run):
         lines.append(line)
     for gate in run.get("gates", []):
         lines.append(f"  [{'quyết' if 'resolution' in gate else 'chờ':<7}] " + gate_text(gate))
+    if run.get("external_review"):
+        review = run["external_review"]
+        lines.append(f"  Review ngoài: {review['status']}" + (f" ({review['tool']})" if review.get("tool") else ""))
     if run.get("check"):
         c = run["check"]
         lines.append(f"  Thực tế {c.get('actual', 0) / 1e6:.1f}M token / P50 {c.get('p50', 0) / 1e6:.1f}M "
