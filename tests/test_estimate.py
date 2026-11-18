@@ -124,6 +124,18 @@ class LedgerAndHookTest(unittest.TestCase):
         self.assertEqual(found[0], "sess1")
         self.assertEqual(found[2], self.transcript.stat().st_size)
 
+    def test_running_session_falls_back_to_the_transcript_just_written(self):
+        projects = Path(self.temp.name) / "projects"
+        # the project opened at cwd wins, however old its transcript
+        self.assertEqual(ledger.running_session(projects, "C:\\work\\demo", now=self.transcript.stat().st_mtime + 9e6)[0],
+                         "sess1")
+        # a work folder that is no session's own: the transcript written within the window
+        now = self.transcript.stat().st_mtime + 30
+        found = ledger.running_session(projects, "C:\\elsewhere\\build", now=now)
+        self.assertEqual((found[0], found[1], found[2]), ("sess1", str(self.transcript), self.transcript.stat().st_size))
+        self.assertIsNone(ledger.running_session(projects, "C:\\elsewhere\\build", now=now + 600))  # nobody is running
+        self.assertIsNone(ledger.running_session(projects / "missing", "C:\\elsewhere\\build"))
+
     def test_usage_since_reads_only_new_complete_lines(self):
         start = self.transcript.stat().st_size
         with self.transcript.open("a", encoding="utf-8") as handle:

@@ -61,6 +61,29 @@ def current_session(projects_dir, cwd):
     return newest.stem, str(newest), newest.stat().st_size
 
 
+def running_session(projects_dir, cwd, window_seconds=120, now=None):
+    """(session_id, transcript path, size) of the session running the command: the project opened at cwd, else
+    (the work folder is not the session's own, as in a /token-tools:ship run that builds elsewhere) the top-level
+    transcript written to within the last `window_seconds`, newest first. None when neither is found."""
+    found = current_session(projects_dir, cwd)
+    if found:
+        return found
+    import time
+    now = time.time() if now is None else now
+    recent = []
+    for path in Path(projects_dir).glob("*/*.jsonl") if Path(projects_dir).is_dir() else []:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if now - stat.st_mtime < window_seconds:
+            recent.append((stat.st_mtime, path, stat.st_size))
+    if not recent:
+        return None
+    _, newest, size = max(recent, key=lambda item: item[0])
+    return newest.stem, str(newest), size
+
+
 PARTS = ("input", "output", "cache_read", "cache_write")
 
 
