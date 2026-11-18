@@ -5,7 +5,7 @@ import {
   usageItems, modelLabel, mtok, parseAgentUsage, pickLimits,
   gateDraft, openerFor, refreshUsage, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
 } from '../hooks/register'
-import { globToRegExp, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
+import { globToRegExp, inAutoMode, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
 import type { Profile } from '../hooks/permissions'
 import { hintSection, minCalls, nudgeText } from '../hooks/delegation'
 import type { Thresholds } from '../hooks/delegation'
@@ -651,6 +651,40 @@ test('M3: a tester writing outside src/test is refused before the tool runs, wit
   expect(await allText(ui)).toContain('git push / commit / reset --hard / rebase / merge')
   expect((await ui.find({ type: 'Text', text: /Cần chú ý/ }))?.text).toBe('Cần chú ý')
   expect((await ui.find({ type: 'Text', text: /Lần chặn gần nhất/ }))?.text).toContain('⛔')
+  await ui.unmount()
+})
+
+test('0.23: in Auto mode, [auto_mode] ask = "deny" turns what would ask into a refusal; elsewhere nothing changes', async ($, on) => {
+  const ask = { decision: 'ask', reason: 'Lệnh luôn phải hỏi' } as const
+  const deny = { decision: 'deny', reason: 'x' } as const
+  const strict = { ...PROFILE, auto_mode: { ask: 'deny' } } as unknown as Profile
+  expect(inAutoMode(ask, 'auto', strict)?.decision).toBe('deny')
+  expect(inAutoMode(ask, 'auto', strict)?.reason).toContain('Lệnh luôn phải hỏi — phiên đang ở chế độ Auto')
+  expect(inAutoMode(ask, 'default', strict)).toBe(ask)               // another mode
+  expect(inAutoMode(ask, undefined, strict)).toBe(ask)               // mode not known
+  expect(inAutoMode(ask, 'auto', PROFILE as unknown as Profile)).toBe(ask)   // a profile from before 0.23
+  expect(inAutoMode(ask, 'auto', { ...strict, auto_mode: { ask: 'ask' } })).toBe(ask)
+  expect(inAutoMode(deny, 'auto', strict)).toBe(deny)
+  expect(inAutoMode(undefined, 'auto', strict)).toBeUndefined()
+
+  resetProfile()
+  let ran = 0
+  engine(on, false, () => { ran += 1 })
+  on('process.run', (_, e) => ({ value: { exitCode: 0, stdout: e.argv.includes('permissions') ? JSON.stringify(strict) : AGENT_USAGE,
+    stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await $.session.start({ cwd: 'C:/repo', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'x', description: 'developer', subagentType: 'developer', permissionMode: 'auto' })
+  const refused = await $.tool.call({ tool: 'Bash', command: 'git push origin main', agentId: 'a1' })
+  expect(JSON.stringify(refused)).toContain('chế độ Auto')
+  expect(ran).toBe(0)
+  const migration = await $.tool.call({ tool: 'Write', file_path: 'C:/repo/svc/src/main/resources/db/migration/V9.sql', content: 'x',
+    agentId: 'a1' })
+  expect(JSON.stringify(migration)).toContain('chế độ Auto')
+  expect(ran).toBe(0)
+  await $.tool.call({ tool: 'Bash', command: 'mvn -q compile', agentId: 'a1' }) // what the role allows still runs
+  expect(ran).toBe(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /vai developer/ }))?.text).toContain('2 bị chặn')
   await ui.unmount()
 })
 
