@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ago, alwaysAskWords, attention, cardMeta, describeCall, eventTone, isInternalTool, meter, percentTone,
   usageItems, modelLabel, mtok, parseAgentUsage, pickLimits,
-  openerFor, refreshUsage, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
+  gateDraft, openerFor, refreshUsage, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
 } from '../hooks/register'
 import { globToRegExp, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
 import type { Profile } from '../hooks/permissions'
@@ -1265,6 +1265,44 @@ test('0.17: the /token-tools:ship run shows on top: stage, steps, budget, result
   const text = await allText(ui)
   expect(text).toContain('Quy trình: Trang báo cáo · bước 6/6 Học · 3/3 việc xong · kết quả đạt · thực tế ×1.30 P50')
   expect(text).toContain('● ● ● ● ● ● ●')
+  await ui.unmount()
+})
+
+test('0.21: an open gate shows under the ship run; a button records the decision and drafts the line', async ($, on) => {
+  const gate = { id: 'g1', step: 'API', question: 'Sửa component dùng chung hay chỉ trang này?', options: ['dùng chung', 'chỉ trang này'] }
+  expect(gateDraft(gate, 'dùng chung'))
+    .toBe('Quyết định g1 cho bước API (Sửa component dùng chung hay chỉ trang này?): dùng chung')
+  const ship = { id: 'r1', title: 'Trang báo cáo', stage: 3, stage_name: 'Chạy', stages: 7, steps_done: 1, steps: 3,
+    failed: 0, running: [], result: null, check: null,
+    gates: [gate, { id: 'g2', step: 'UI', question: 'Tên cột là gì?', options: [] }] }
+  expect(parseAgentUsage(JSON.stringify({ agents: {}, total: { tokens: 0, usd: 0 }, ship: { ...ship, gates: undefined } }))
+    .ship!.gates).toEqual([]) // a run written before 0.21
+  resetProfile()
+  engine(on)
+  on('session.id', () => ({ value: 's1' }))
+  on('session.usage', () => ({ value: { startedAt: 0, changed: [] } }))
+  const ran: string[][] = []
+  let open = ship.gates
+  on('process.run', (_, e) => {
+    ran.push([...e.argv])
+    if (e.argv.includes('ship-gate')) open = open.filter(item => item.id !== 'g1')
+    return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false,
+      stdout: JSON.stringify({ agents: {}, total: { tokens: 0, usd: 0 }, ship: { ...ship, gates: open } }) } }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await refreshUsage($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let text = await allText(ui)
+  expect(text).toContain('❓ Bước API chờ bạn quyết định: Sửa component dùng chung hay chỉ trang này?')
+  expect(text).toContain('Trả lời Claude trong ô chat (cổng g2).')
+  expect((await ui.find({ type: 'Button', key: 'gate-g1-1' }))?.text).toBe('chỉ trang này')
+  await ui.press({ key: 'gate-g1-0' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const call = ran.find(command => command.includes('ship-gate'))!
+  expect(call.slice(-6)).toEqual(['ship-gate', 'r1', '--resolve', 'g1', '--answer', 'dùng chung'])
+  text = await allText(ui)
+  expect(text).not.toContain('Bước API chờ bạn quyết định')
+  expect(text).toContain('Bước UI chờ bạn quyết định: Tên cột là gì?')
   await ui.unmount()
 })
 

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, UiCopyArgs } from 'claude-code'
 
-import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, QuestionRow, ShipSnap, Spend, UsageSnap } from '../types'
+import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, QuestionRow, ShipGate, ShipSnap, Spend, UsageSnap } from '../types'
 import { judge, roleFor } from './permissions'
 import type { Profile } from './permissions'
 import { cheaperText, hintSection, minCalls, nudgeText } from './delegation'
@@ -115,14 +115,14 @@ export function parseAgentUsage(stdout: string): Pick<UsageSnap, 'agents' | 'tot
       steps?: { role: string; share: number }[] } | null
     ship?: { id: string; title: string; cwd?: string | null; stage: number; stage_name: string; stages: number; steps_done: number
       steps: number; failed: number; running: string[]; result?: string | null; check?: ShipSnap['check'] | null
-      stalled?: ShipSnap['stalled']; escalate?: ShipSnap['escalate'] } | null
+      stalled?: ShipSnap['stalled']; escalate?: ShipSnap['escalate']; gates?: ShipSnap['gates'] } | null
   }
   if (!data.agents || !data.total) throw new Error('agent-usage: JSON thiếu agents / total')
   const s = data.ship
   const ship: ShipSnap | undefined = s
     ? { id: s.id, title: s.title, cwd: s.cwd ?? undefined, stage: s.stage, stageName: s.stage_name, stages: s.stages, stepsDone: s.steps_done,
         steps: s.steps, failed: s.failed, running: s.running ?? [], result: s.result ?? undefined,
-        check: s.check ?? undefined, stalled: s.stalled ?? [], escalate: s.escalate ?? [] }
+        check: s.check ?? undefined, stalled: s.stalled ?? [], escalate: s.escalate ?? [], gates: s.gates ?? [] }
     : undefined
   const budget = data.budget
     ? { id: data.budget.id, title: data.budget.title, budgetTokens: data.budget.budget_tokens,
@@ -164,6 +164,35 @@ export async function openShipReport($: EngineInterface): Promise<void> {
     shipReport.busy = false
     $.ui.invalidate('ui.render')
   }
+}
+
+/** 0.21: what goes to the prompt box once a gate is answered on the pane, for the person to send: the main loop
+ *  learns the decision from it (and from `ctt ship-next`). */
+export function gateDraft(gate: ShipGate, answer: string): string {
+  return `Quyết định ${gate.id} cho bước ${gate.step} (${gate.question}): ${answer}`
+}
+
+let gateNote = ''
+
+/** Record the decision with `ctt ship-gate --resolve`, redraw, and draft the line that tells the main loop. */
+export async function answerGate($: EngineInterface, runId: string, gate: ShipGate, answer: string): Promise<void> {
+  try {
+    await runCtt($, ['ship-gate', runId, '--resolve', gate.id, '--answer', answer])
+    gateNote = ''
+  } catch (error) {
+    gateNote = `Chưa ghi được quyết định ${gate.id}: ${String(error).slice(0, 160)}`
+    $.ui.invalidate('ui.render')
+    return
+  }
+  await refreshUsage($)
+  let isFilled = false
+  try {
+    isFilled = (await $.prompt.fill({ text: gateDraft(gate, answer) })).isFilled
+  } catch {
+    isFilled = false
+  }
+  if (!isFilled) gateNote = `Đã ghi quyết định ${gate.id}: ${answer}. Nhắn Claude "chạy tiếp" để bước ${gate.step} tiếp tục.`
+  $.ui.invalidate('ui.render')
 }
 
 /** 0.20: what a /token-tools:ship run needs the person (or the main loop) to look at: steps nobody is working
@@ -1379,6 +1408,24 @@ export const register: Register = on => {
               {Array.from({ length: snap.ship.stages }, (_, i) => i < snap.ship!.stage || snap.ship!.result ? '●'
                 : i === snap.ship!.stage ? '◐' : '○').join(' ')}
             </Text>
+            {(snap.ship.gates ?? []).map(gate => (
+              <Box key={`gate-${gate.id}`} flexDirection="column">
+                <Text color="warning" wrap="wrap">❓ Bước {gate.step} chờ bạn quyết định: {gate.question}</Text>
+                {gate.options.length > 0 ? (
+                  <Box flexDirection="row" flexWrap="wrap" gap={1}>
+                    {gate.options.map((option, index) => (
+                      <Button key={`gate-${gate.id}-${index}`} variant={index === 0 ? 'primary' : 'secondary'}
+                        onPress={() => void answerGate($, snap.ship!.id, gate, option)}>
+                        {option}
+                      </Button>
+                    ))}
+                  </Box>
+                ) : (
+                  <Text dimColor wrap="wrap">Trả lời Claude trong ô chat (cổng {gate.id}).</Text>
+                )}
+              </Box>
+            ))}
+            {gateNote && <Text color="warning" wrap="wrap">{gateNote}</Text>}
           </Box>
         )}
         {profileError && <Text color="warning" wrap="wrap">{profileError}</Text>}

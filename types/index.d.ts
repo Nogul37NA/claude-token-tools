@@ -61,7 +61,10 @@ export type ShipSnap = {
    *  ladder sends to another model (or that ran out of ladder). */
   stalled?: { name: string; minutes: number }[]
   escalate?: { name: string; model?: string; effort?: string; exhausted?: boolean }[]
+  /** 0.21: decision gates nobody has answered yet — a question tied to one step, which waits for the answer. */
+  gates?: ShipGate[]
 }
+export type ShipGate = { id: string; step: string; question: string; options: string[] }
 export type UsageSnap = {
   at: number
   ship?: ShipSnap

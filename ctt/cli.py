@@ -321,10 +321,40 @@ def cmd_ship_next(args):
         print("Đang chạy: " + ", ".join(f"{s['name']} [{s['attempt'] or 'không mã'}]" for s in nxt["running"]))
     if nxt["waiting"]:
         print("Còn chờ: " + "; ".join(f"{s['name']} ← {', '.join(s['on'])}" for s in nxt["waiting"]))
+    if nxt["gated"]:
+        print("Chờ quyết định của người dùng: " + "; ".join(f"{s['name']} ({', '.join(s['gates'])})" for s in nxt["gated"]))
+    for gate in nxt["decided"]:
+        print("Đã quyết định: " + ship.gate_text(gate))
     if nxt["failed"]:
         print("Lỗi: " + ", ".join(f"{s['name']} ({s['attempts']} lần thử)" for s in nxt["failed"]))
     if nxt["all_over"]:
         print("Mọi bước đã xong.")
+
+
+def cmd_ship_gate(args):
+    import json
+    from ctt import ship
+    try:
+        if args.resolve:
+            if args.answer is None:
+                raise ValueError("--resolve cần --answer")
+            run, gate = ship.gate_resolve(args.id, args.resolve, args.answer)
+        elif args.step:
+            run, gate = ship.gate_create(args.id, args.step, args.question, args.option)
+        else:
+            run, gate = ship.load(args.id), None
+    except ValueError as error:
+        _ship_fail(error)
+    if args.json:
+        print(json.dumps({"gate": gate, "gates": run.get("gates", [])}, ensure_ascii=False))
+        return
+    if gate is None:
+        print("\n".join(ship.gate_text(g) for g in run.get("gates", [])) or "Lượt không có cổng quyết định nào.")
+    elif args.resolve:
+        print(f"Đã quyết định: {ship.gate_text(gate)} — bước {gate['step']} chạy được lại")
+    else:
+        print(f"Chờ quyết định: {ship.gate_text(gate)}\nBước {gate['step']} dừng tới khi có "
+              f"`ship-gate {args.id} --resolve {gate['id']} --answer …`; các bước khác chạy tiếp.")
 
 
 def cmd_ship_resume(args):
@@ -544,6 +574,17 @@ def main(argv=None):
     command.add_argument("id")
     command.add_argument("--json", action="store_true")
     command.set_defaults(handler=cmd_ship_next)
+
+    command = sub.add_parser("ship-gate", help="cổng quyết định: hỏi người dùng cho một bước, các bước khác chạy tiếp; "
+                                               "không tham số: liệt kê")
+    command.add_argument("id")
+    command.add_argument("--step", help="mở cổng cho bước này (kèm --question)")
+    command.add_argument("--question")
+    command.add_argument("--option", action="append", help="một lựa chọn (lặp được, ít nhất 2); bỏ trống = trả lời tự do")
+    command.add_argument("--resolve", metavar="MÃ_CỔNG", help="ghi quyết định cho cổng này (kèm --answer)")
+    command.add_argument("--answer")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_ship_gate)
 
     command = sub.add_parser("ship-resume", help="chạy tiếp một lượt dở ở phiên này; không có id: liệt kê các lượt dở")
     command.add_argument("id", nargs="?")

@@ -122,7 +122,7 @@ def collect(days, projects_dir, prices, scan, store_dir=None, now=None):
             "id": run["id"], "title": run["title"], "started": started, "ended": ended,
             "minutes": max(0, round((ended - started).total_seconds() / 60)),
             "stage": run.get("stage", 0), "stage_name": ship.STAGES[run.get("stage", 0)], "result": run.get("result"),
-            "plan": plan, "modes": {mode: sum(1 for s in plan if s.get("mode") == mode) for mode in ship.MODES},
+            "gates": run.get("gates", []), "plan": plan, "modes": {mode: sum(1 for s in plan if s.get("mode") == mode) for mode in ship.MODES},
             "failed_steps": [s["name"] for s in plan if s.get("status") == "failed"],
             "children": kids, "tokens": tokens, "usd": usd, "usd_children": usd_kids,
             "p50": est["tokens"]["p50"] if est else None, "p90": est["tokens"]["p90"] if est else None,
@@ -416,7 +416,9 @@ def page(report):
             f'{" · " + str(s["attempts"]) + " lần thử" if s.get("attempts", 0) > 1 else ""}'
             f'{" · " + str(len(s["report"]["files"])) + " file" if (s.get("report") or {}).get("files") else ""}'
             f'{" · test: " + e(s["report"]["tests"]) if (s.get("report") or {}).get("tests") else ""}'
-            f'{" · " + e(s["note"]) if s.get("note") else ""}</div>' for s in r["plan"]) or \
+            f'{" · " + e(s["note"]) if s.get("note") else ""}</div>' for s in r["plan"]) + "".join(
+            f'<div><span class="mono muted">[cổng]</span> {e(ship.gate_text(g))}</div>'
+            for g in r.get("gates", [])) or \
             '<div class="muted">Chưa có bảng chia việc.</div>'
         extra = []
         if r["p50"] is not None:
