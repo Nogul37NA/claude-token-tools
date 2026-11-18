@@ -99,7 +99,8 @@ def _cache_writes(usage):
 
 def scan(root):
     """Parse every transcript under root. Malformed lines are counted, never fatal."""
-    root = Path(root)
+    from ctt.config import long_path
+    root = long_path(root)
     result = Scan()
     seen_requests = set()
     seen_tools = set()

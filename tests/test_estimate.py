@@ -132,7 +132,9 @@ class LedgerAndHookTest(unittest.TestCase):
         # a work folder that is no session's own: the transcript written within the window
         now = self.transcript.stat().st_mtime + 30
         found = ledger.running_session(projects, "C:\\elsewhere\\build", now=now)
-        self.assertEqual((found[0], found[1], found[2]), ("sess1", str(self.transcript), self.transcript.stat().st_size))
+        from ctt import config
+        self.assertEqual((found[0], found[1], found[2]),
+                         ("sess1", str(config.long_path(self.transcript)), self.transcript.stat().st_size))
         self.assertIsNone(ledger.running_session(projects, "C:\\elsewhere\\build", now=now + 600))  # nobody is running
         self.assertIsNone(ledger.running_session(projects / "missing", "C:\\elsewhere\\build"))
 
