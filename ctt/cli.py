@@ -279,6 +279,99 @@ def _ship_session(args):
     return found[0] if found else None
 
 
+def _race_out(race, as_json):
+    import json
+    from ctt import race as racing
+    if as_json:
+        print(json.dumps(race, ensure_ascii=False))
+        return
+    print(f"Cuộc đua {race['id']} · {race['title']} · {race['status']}")
+    for e in race["entrants"]:
+        print(f"  {e['name']} · {e['model']}:{e['effort']} · {e['status']}"
+              + (f" · điểm {racing.quality(e):g}" if racing.quality(e) is not None else "")
+              + (f" · {e['branch']}" if e.get("branch") else ""))
+    if race.get("winner"):
+        print(f"  Thắng: {race['winner']}")
+
+
+def cmd_race_start(args):
+    import json
+    from ctt import race as racing
+    try:
+        limits = racing.settings(load_policy(args.policy))
+        entrants = racing.parse_entrants(args.entrants or limits["entrants"], limits["max_entrants"])
+        racing.check_clean(args.cwd)
+    except ValueError as error:
+        _ship_fail(error)
+    race = racing.start(args.title, args.task, entrants, _ship_session(args), args.cwd)
+    print(json.dumps({"race": race, "brief": racing.brief_lines(race)}, ensure_ascii=False, indent=1))
+
+
+def cmd_race_entry(args):
+    from ctt import race as racing
+    try:
+        race = racing.set_entry(args.id, args.name, args.agent_id, args.worktree, args.branch, args.status, args.note)
+    except ValueError as error:
+        _ship_fail(error)
+    _race_out(race, args.json)
+
+
+def cmd_race_score(args):
+    from ctt import race as racing
+    try:
+        race = racing.score(args.id, args.name, args.tests_pass, args.tests_fail, args.review, args.notes)
+    except ValueError as error:
+        _ship_fail(error)
+    _race_out(race, args.json)
+
+
+def cmd_race_report(args):
+    import json
+    from ctt import race as racing
+    try:
+        tie = racing.settings(load_policy(args.policy))["tie_points"]
+        result = racing.report(args.id, args.projects_dir, load_prices(args.prices), tie)
+    except ValueError as error:
+        _ship_fail(error)
+    print(json.dumps({key: result[key] for key in ("race", "rows", "suggested", "reason")}, ensure_ascii=False)
+          if args.json else racing.report_text(result))
+
+
+def cmd_race_pick(args):
+    from ctt import race as racing
+    try:
+        race = racing.pick(args.id, args.winner, args.note)
+    except ValueError as error:
+        _ship_fail(error)
+    _race_out(race, args.json)
+
+
+def cmd_race_cancel(args):
+    from ctt import race as racing
+    try:
+        race = racing.cancel(args.id, args.note)
+    except ValueError as error:
+        _ship_fail(error)
+    _race_out(race, args.json)
+
+
+def cmd_race_stats(args):
+    import json
+    from ctt import race as racing
+    rows = racing.stats(args.days)
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return
+    if not rows:
+        print(f"Chưa có cuộc đua nào được chọn trong {args.days} ngày qua.")
+        return
+    for row in rows:
+        usd = f"${row['median_usd']:.2f}" if row["median_usd"] is not None else "—"
+        quality = f"{row['median_quality']:g}" if row["median_quality"] is not None else "—"
+        print(f"{row['entrant']}: {row['races']} cuộc · thắng {row['wins']} ({row['win_rate']:.0%}) · "
+              f"trung vị {usd} · điểm {quality}")
+
+
 def cmd_ship_stage(args):
     import json
     from ctt import ship
@@ -651,6 +744,63 @@ def main(argv=None):
     command.add_argument("--out", help="thư mục ghi trang (mặc định <ctt home>/reports)")
     command.add_argument("--json", action="store_true", help="JSON cho khung: đường dẫn trang, số tổng, gợi ý")
     command.set_defaults(handler=cmd_ship_report)
+
+    command = sub.add_parser("race-start", help="mở một cuộc đua /token-tools:race (JSON: cuộc đua, lời giao việc)")
+    command.add_argument("--title", required=True)
+    command.add_argument("--task", required=True, help="yêu cầu giao cho mọi đối thủ")
+    command.add_argument("--cwd", default=str(Path.cwd()))
+    command.add_argument("--entrants", help='vd "sonnet:medium,opus:high" (mặc định: [race] entrants)')
+    command.add_argument("--session", default="auto", help="auto (phiên mới nhất của --cwd) | none | <session id>")
+    command.add_argument("--policy")
+    command.add_argument("--projects-dir", default=str(config.projects_dir()))
+    command.set_defaults(handler=cmd_race_start)
+
+    command = sub.add_parser("race-entry", help="ghi agent / worktree / nhánh / trạng thái của một đối thủ")
+    command.add_argument("id")
+    command.add_argument("--name", required=True, choices=("A", "B", "C"))
+    command.add_argument("--agent-id")
+    command.add_argument("--worktree")
+    command.add_argument("--branch")
+    command.add_argument("--status", choices=("pending", "running", "done", "failed"))
+    command.add_argument("--note")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_race_entry)
+
+    command = sub.add_parser("race-score", help="ghi kết quả test và điểm review của một đối thủ")
+    command.add_argument("id")
+    command.add_argument("--name", required=True, choices=("A", "B", "C"))
+    command.add_argument("--tests-pass", type=int)
+    command.add_argument("--tests-fail", type=int)
+    command.add_argument("--review", type=float, help="điểm 0-10 của reviewer mù")
+    command.add_argument("--notes")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_race_score)
+
+    command = sub.add_parser("race-report", help="bảng so sánh: token, $ (từ transcript agent), diff, điểm, đề xuất")
+    command.add_argument("id")
+    command.add_argument("--json", action="store_true")
+    command.add_argument("--projects-dir", default=str(config.projects_dir()))
+    command.add_argument("--prices")
+    command.add_argument("--policy")
+    command.set_defaults(handler=cmd_race_report)
+
+    command = sub.add_parser("race-pick", help="người dùng chọn bản thắng; ghi sổ picks.jsonl")
+    command.add_argument("id")
+    command.add_argument("--winner", required=True, choices=("A", "B", "C"))
+    command.add_argument("--note")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_race_pick)
+
+    command = sub.add_parser("race-cancel", help="huỷ cuộc đua")
+    command.add_argument("id")
+    command.add_argument("--note")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_race_cancel)
+
+    command = sub.add_parser("race-stats", help="theo model:effort: số cuộc, thắng, tỉ lệ, trung vị $ và điểm")
+    command.add_argument("--days", type=int, default=90)
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(handler=cmd_race_stats)
 
     command = sub.add_parser("init", help="khai các thư mục chứa project vào policy riêng của máy")
     command.add_argument("--root", action="append", required=True, help="thư mục chứa project (lặp được)")

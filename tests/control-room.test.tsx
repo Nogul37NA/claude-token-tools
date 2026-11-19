@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ago, alwaysAskWords, attention, cardMeta, describeCall, eventTone, isInternalTool, meter, percentTone,
   usageItems, modelLabel, mtok, parseAgentUsage, pickLimits,
-  gateDraft, openerFor, mcpLabel, mergeMcp, refreshUsage, resetMcp, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
+  gateDraft, openerFor, mcpLabel, mergeMcp, refreshUsage, resetMcp, resetProfile, raceAlerts, raceRow, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
 } from '../hooks/register'
 import { globToRegExp, inAutoMode, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
 import type { Profile } from '../hooks/permissions'
@@ -1337,6 +1337,57 @@ test('0.21: an open gate shows under the ship run; a button records the decision
   text = await allText(ui)
   expect(text).not.toContain('Bước API chờ bạn quyết định')
   expect(text).toContain('Bước UI chờ bạn quyết định: Tên cột là gì?')
+  await ui.unmount()
+})
+
+const RACE = { id: 'k1', title: 'Viết parser', status: 'judging', winner: null, suggested: 'B', entrants: [
+  { name: 'A', model: 'haiku', effort: 'low', status: 'done', tokens: 120000, usd: 0.4, quality: 6.5, tests_pass: 8, tests_fail: 2 },
+  { name: 'B', model: 'sonnet', effort: 'medium', status: 'done', tokens: 2500000, usd: 1.25, quality: 8.8, tests_pass: 10, tests_fail: 0 },
+  { name: 'C', model: 'opus', effort: 'high', status: 'running', tokens: null, usd: null, quality: null, tests_pass: null, tests_fail: null },
+] }
+const raceUsage = (race: unknown) => JSON.stringify({ agents: {}, total: { tokens: 0, usd: 0 }, race })
+
+test('race: parse snake_case to camelCase, null stays absent', () => {
+  const parsed = parseAgentUsage(raceUsage(RACE)).race!
+  expect(parsed.suggested).toBe('B')
+  expect(parsed.winner).toBeUndefined()
+  expect(parsed.entrants[1]).toMatchObject({ testsPass: 10, testsFail: 0, quality: 8.8, tokens: 2500000 })
+  expect(parsed.entrants[2].tokens).toBeUndefined()
+  expect(parseAgentUsage(raceUsage(null)).race).toBeUndefined()
+})
+
+test('race: rows carry the marks and figures; judging with a suggestion asks for a pick', () => {
+  const race = parseAgentUsage(raceUsage(RACE)).race!
+  expect(raceRow(race, race.entrants[0])).toBe('A · haiku·low · xong · test 8✓/2✗ · điểm 6.5 · 120k · $0.40')
+  expect(raceRow(race, race.entrants[1])).toBe('B · sonnet·medium · xong · test 10✓/0✗ · điểm 8.8 · 2.5M · $1.25 · ⭐ đề xuất')
+  expect(raceRow(race, race.entrants[2])).toBe('C · opus·high · đang chạy')
+  const picked = { ...race, status: 'picked', winner: 'B' }
+  expect(raceRow(picked, picked.entrants[1])).toContain('⭐ đề xuất · 🏆')
+  expect(raceAlerts(race)).toEqual(['Race Viết parser: chọn bản thắng (đề xuất B)'])
+  expect(raceAlerts(picked)).toEqual([])
+  expect(raceAlerts({ ...race, suggested: undefined })).toEqual([])
+})
+
+test('race: the pane draws the block and the attention line; no race draws nothing', async ($, on) => {
+  resetProfile()
+  engine(on)
+  on('session.id', () => ({ value: 's1' }))
+  on('session.usage', () => ({ value: { startedAt: 0, changed: [] } }))
+  let race: unknown = RACE
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false,
+    stdout: raceUsage(race) } }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await refreshUsage($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let text = await allText(ui)
+  expect(text).toContain('Race · Viết parser')
+  expect(text).toContain('B · sonnet·medium · xong · test 10✓/0✗ · điểm 8.8 · 2.5M · $1.25 · ⭐ đề xuất')
+  expect(text).toContain('Race Viết parser: chọn bản thắng (đề xuất B)')
+  race = null
+  await refreshUsage($)
+  text = await allText(ui)
+  expect(text).not.toContain('Race ·')
+  expect(text).not.toContain('chọn bản thắng')
   await ui.unmount()
 })
 

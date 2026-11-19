@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, UiCopyArgs } from 'claude-code'
 
-import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, McpServerRow, McpSnap, QuestionRow, ShipGate, ShipSnap, Spend, UsageSnap } from '../types'
+import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, McpServerRow, McpSnap, QuestionRow, RaceSnap, ShipGate, ShipSnap, Spend, UsageSnap } from '../types'
 import { inAutoMode, judge, roleFor } from './permissions'
 import type { Profile } from './permissions'
 import { cheaperText, hintSection, minCalls, nudgeText } from './delegation'
@@ -109,7 +109,7 @@ export function pickLimits(limits: readonly { kind: string; percentUsed: number;
 }
 
 /** Parse `ctt agent-usage` JSON into the pane's snapshot fields. */
-export function parseAgentUsage(stdout: string): Pick<UsageSnap, 'agents' | 'total' | 'budget' | 'ship'> {
+export function parseAgentUsage(stdout: string): Pick<UsageSnap, 'agents' | 'total' | 'budget' | 'ship' | 'race'> {
   const data = JSON.parse(stdout) as {
     agents: Record<string, Spend>; total: Spend
     budget?: { id: string; title: string; budget_tokens: number; used_tokens: number; p50_tokens: number; p90_tokens: number
@@ -117,6 +117,9 @@ export function parseAgentUsage(stdout: string): Pick<UsageSnap, 'agents' | 'tot
     ship?: { id: string; title: string; cwd?: string | null; stage: number; stage_name: string; stages: number; steps_done: number
       steps: number; failed: number; running: string[]; result?: string | null; check?: ShipSnap['check'] | null
       stalled?: ShipSnap['stalled']; escalate?: ShipSnap['escalate']; gates?: ShipSnap['gates'] } | null
+    race?: { id: string; title: string; status: string; winner?: string | null; suggested?: string | null
+      entrants?: { name: string; model: string; effort: string; status: string; tokens?: number | null; usd?: number | null
+        quality?: number | null; tests_pass?: number | null; tests_fail?: number | null }[] } | null
   }
   if (!data.agents || !data.total) throw new Error('agent-usage: JSON thiếu agents / total')
   const s = data.ship
@@ -130,7 +133,33 @@ export function parseAgentUsage(stdout: string): Pick<UsageSnap, 'agents' | 'tot
         usedTokens: data.budget.used_tokens, p50Tokens: data.budget.p50_tokens, p90Tokens: data.budget.p90_tokens,
         steps: data.budget.steps }
     : undefined
-  return { agents: data.agents, total: data.total, budget, ship }
+  const r = data.race
+  const race: RaceSnap | undefined = r
+    ? { id: r.id, title: r.title, status: r.status, winner: r.winner ?? undefined, suggested: r.suggested ?? undefined,
+        entrants: (r.entrants ?? []).map(e => ({ name: e.name, model: e.model, effort: e.effort, status: e.status,
+          tokens: e.tokens ?? undefined, usd: e.usd ?? undefined, quality: e.quality ?? undefined,
+          testsPass: e.tests_pass ?? undefined, testsFail: e.tests_fail ?? undefined })) }
+    : undefined
+  return { agents: data.agents, total: data.total, budget, ship, race }
+}
+
+/** Attention line for a race waiting on the person's pick. */
+export function raceAlerts(race: RaceSnap): string[] {
+  return race.status === 'judging' && race.suggested && !race.winner
+    ? [`Race ${race.title}: chọn bản thắng (đề xuất ${race.suggested})`] : []
+}
+
+const RACE_STATUS: Record<string, string> = { pending: 'chờ', running: 'đang chạy', done: 'xong', failed: 'lỗi' }
+
+/** One row per entrant: name, model·effort, status, tests, score, tokens, $, and the ⭐ / 🏆 marks. */
+export function raceRow(race: RaceSnap, e: RaceSnap['entrants'][number]): string {
+  const tests = e.testsPass !== undefined || e.testsFail !== undefined ? `test ${e.testsPass ?? 0}✓/${e.testsFail ?? 0}✗` : ''
+  return [
+    e.name, `${e.model}·${e.effort}`, RACE_STATUS[e.status] ?? e.status, tests,
+    e.quality !== undefined ? `điểm ${e.quality}` : '',
+    e.tokens !== undefined ? mtok(e.tokens) : '', e.usd !== undefined ? usd(e.usd) : '',
+    race.suggested === e.name ? '⭐ đề xuất' : '', race.winner === e.name ? '🏆' : '',
+  ].filter(Boolean).join(' · ')
 }
 
 // 0.18.0: "Báo cáo ship" — `ctt ship-report --json` writes the page, the system's own opener shows it.
@@ -1480,6 +1509,7 @@ export const register: Register = on => {
     const problems = rows.reduce((sum, row) => sum + row.errors + (row.blocked ?? 0), 0)
     const urgent = attention(log, now)
     const shipNeeds = snap.ship && !snap.ship.result ? shipAlerts(snap.ship) : []
+    const raceNeeds = snap.race ? raceAlerts(snap.race) : []
     const profile = showRoles ? await loadProfile($) : undefined
     const activeRoles = [...new Set(rows.map(row => row.role).filter((role): role is string => !!role))]
     const shownRoles = profile ? (showAllRoles || activeRoles.length === 0 ? Object.keys(profile.roles) : activeRoles) : []
@@ -1509,12 +1539,13 @@ export const register: Register = on => {
           </Text>
           <Text color={problems ? 'error' : 'subtle'}>{problems ? `${problems} lỗi / bị chặn` : 'không có lỗi'}</Text>
         </Box>
-        {(urgent.length > 0 || nudge || shipNeeds.length > 0 || authLines.length > 0) && (
+        {(urgent.length > 0 || nudge || shipNeeds.length > 0 || raceNeeds.length > 0 || authLines.length > 0) && (
           <Box key="attention" flexDirection="column" borderStyle="round" paddingX={1}
             borderColor={urgent.some(event => event.text.startsWith('⛔')) ? 'error' : 'warning'}>
             <Text weight="semibold">Cần chú ý</Text>
             {nudge && <Text color="warning" wrap="wrap">{nudge}</Text>}
             {shipNeeds.map(line => <Text color="warning" wrap="wrap">{line}</Text>)}
+            {raceNeeds.map(line => <Text color="warning" wrap="wrap">{line}</Text>)}
             {authLines.map(line => <Text key={`auth-${line}`} color="warning" wrap="wrap">{`🔑 ${line}`}</Text>)}
             {urgent.map(event => (
               <Text color={eventTone(event.text)} wrap="wrap">
@@ -1549,6 +1580,16 @@ export const register: Register = on => {
               </Box>
             ))}
             {gateNote && <Text color="warning" wrap="wrap">{gateNote}</Text>}
+          </Box>
+        )}
+        {snap.race && (
+          <Box key="race" flexDirection="column" borderStyle="round" paddingX={1}
+            borderColor={snap.race.status === 'cancelled' ? 'subtle' : snap.race.winner ? 'success' : 'claude'}>
+            <Text weight="semibold" wrap="wrap">Race · {snap.race.title}</Text>
+            {snap.race.entrants.map(entrant => (
+              <Text key={`race-${entrant.name}`} wrap="wrap"
+                color={entrant.status === 'failed' ? 'error' : undefined}>{raceRow(snap.race!, entrant)}</Text>
+            ))}
           </Box>
         )}
         {profileError && <Text color="warning" wrap="wrap">{profileError}</Text>}

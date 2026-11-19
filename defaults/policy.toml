@@ -134,6 +134,13 @@ command = []
 timeout_seconds = 600           # quá thời hạn thì bỏ qua, review trong nhà vẫn chạy
 max_diff_chars = 120000         # diff dài hơn bị cắt, reviewer được báo là đã cắt
 
+# /token-tools:race (0.25.0): cùng một việc giao cho 2-3 subagent khác model/effort, mỗi bên một git worktree;
+# test + reviewer mù chấm điểm, bảng so sánh kèm chi phí, người dùng chọn bản thắng.
+[race]
+entrants = ["sonnet:medium", "opus:high"]   # mặc định của /token-tools:race
+max_entrants = 3
+tie_points = 1.0   # chênh điểm ≤ chừng này coi như hoà → đề xuất bản rẻ hơn
+
 [hooks]
 enabled = true
 context_warn_tokens = 200000        # cảnh báo khi context phiên vượt ngưỡng này…

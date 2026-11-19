@@ -91,6 +91,12 @@ def agent_usage(projects_dir, session_id, prices, state_dir=None):
                   "steps": [{"role": s["role"], "share": s["share"]} for s in est["parts"][0]["steps"]]}
     from ctt import ship
     run = ship.for_session(session_id)
+    from ctt import race
+    from ctt.policy import load_policy
+    try:
+        tie_points = race.settings(load_policy(None))["tie_points"]
+    except (ValueError, OSError):
+        tie_points = None  # a broken [race] never breaks the pane's figures
     return {
         "session": session_id,
         "agents": agents,
@@ -98,4 +104,7 @@ def agent_usage(projects_dir, session_id, prices, state_dir=None):
         "budget": budget,
         # 0.17: the session's /token-tools:ship run, if any; 0.20: with the running steps nobody is working on
         "ship": ship.brief(run, _stalled(projects_dir, session_id, run)),
+        # 0.25: the session's running / judging /token-tools:race, if any
+        "race": race.brief(race.for_session(session_id), tie_points,
+                          {a: {"tokens": s["tokens"], "usd": s["usd"]} for a, s in agents.items()}),
     }

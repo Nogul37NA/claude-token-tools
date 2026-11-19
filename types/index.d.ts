@@ -64,6 +64,21 @@ export type ShipSnap = {
   /** 0.21: decision gates nobody has answered yet — a question tied to one step, which waits for the answer. */
   gates?: ShipGate[]
 }
+/** One entrant of a race: the same task run on its own model/effort in its own worktree, then scored. */
+export type RaceEntrant = {
+  name: string; model: string; effort: string
+  /** pending | running | done | failed */
+  status: string
+  tokens?: number; usd?: number; quality?: number; testsPass?: number; testsFail?: number
+}
+/** The session's race, as `ctt agent-usage` reads it. */
+export type RaceSnap = {
+  id: string; title: string
+  /** running | judging | picked | cancelled */
+  status: string
+  entrants: RaceEntrant[]
+  winner?: string; suggested?: string
+}
 export type ShipGate = { id: string; step: string; question: string; options: string[] }
 /** One row of the "MCP" section: `ctt mcp --json` merged with the engine's context breakdown. */
 export type McpServerRow = {
@@ -86,6 +101,7 @@ export type McpSnap = { at: number; rows: McpServerRow[]; error?: string }
 export type UsageSnap = {
   at: number
   ship?: ShipSnap
+  race?: RaceSnap
   agents: Record<string, Spend>
   total: Spend
   budget?: BudgetSnap
