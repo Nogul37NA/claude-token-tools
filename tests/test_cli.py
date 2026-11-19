@@ -70,6 +70,14 @@ class CliTest(unittest.TestCase):
                 main([command, "--help"])
             self.assertEqual(done.exception.code, 0, command)
 
+    def test_version_option_prints_version_and_exits_zero(self):
+        from ctt import __version__
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as done:
+            main(["--version"])
+        self.assertEqual(done.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), f"ctt {__version__}")
+
 
 if __name__ == "__main__":
     unittest.main()
