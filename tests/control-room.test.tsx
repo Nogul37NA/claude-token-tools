@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ago, alwaysAskWords, attention, cardMeta, describeCall, eventTone, isInternalTool, meter, percentTone,
   usageItems, modelLabel, mtok, parseAgentUsage, pickLimits,
-  gateDraft, openerFor, refreshUsage, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
+  gateDraft, openerFor, mcpLabel, mergeMcp, refreshUsage, resetMcp, resetProfile, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
 } from '../hooks/register'
 import { globToRegExp, inAutoMode, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
 import type { Profile } from '../hooks/permissions'
@@ -1392,5 +1392,105 @@ test('0.18: Báo cáo ship makes the page with ctt and opens it with the system 
   expect(ran.some(argv => argv.includes('ship-report') && argv.includes('--json'))).toBe(true)
   expect(ran.at(-1)).toEqual(['explorer.exe', String.raw`C:\r\ship.html`])
   expect(await allText(ui)).toContain('4 lượt · 2 đã xong · 1 đạt · $12.16 — C:/r/ship.html')
+  await ui.unmount()
+})
+
+const MCP_JSON = {
+  servers: [
+    { name: 'plugin:gitlab:gitlab', source: 'plugin', type: 'http', status: 'needs_auth', calls: 0, errors: 0, result_tokens: 0,
+      last_at: null, tools: {} },
+    { name: 'code-graph', source: 'user', type: 'stdio', status: 'configured', calls: 7, errors: 1, result_tokens: 12_300,
+      last_at: '2026-11-17T01:00:00Z', tools: { cg_impact: 5, cg_search: 2 } },
+    { name: 'old', source: 'local', type: 'stdio', status: 'disabled', calls: 0, errors: 0, result_tokens: 0, last_at: null, tools: {} },
+  ],
+}
+const MCP_TOOLS = [
+  { name: 'mcp__code-graph__cg_impact', serverName: 'code-graph', tokens: 400, isLoaded: true },
+  { name: 'mcp__code-graph__cg_search', serverName: 'code-graph', tokens: 350, isLoaded: true },
+  { name: 'mcp__Figma__get_metadata', serverName: 'Figma', tokens: 900, isLoaded: true },
+  { name: 'mcp__ccd_session__x', serverName: 'ccd_session', tokens: 99, isLoaded: true },
+]
+
+function mcpEngine(on: Parameters<Parameters<typeof test>[1]>[1], exitCode = 0, seen: string[][] = []) {
+  engine(on)
+  on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: 'C:/repo' }))
+  on('session.usage', () => ({ value: { startedAt: 0, changed: [], context: { window: 1e6, percent: 10, breakdown: { mcpTools: MCP_TOOLS } } } }))
+  on('process.run', (_, e) => {
+    seen.push([...e.argv])
+    const mcp = e.argv.includes('mcp')
+    return { value: { exitCode, stderr: exitCode ? 'boom' : '', isStdoutTruncated: false, isStderrTruncated: false,
+      stdout: exitCode ? '' : mcp ? JSON.stringify(MCP_JSON) : AGENT_USAGE } }
+  })
+}
+
+test('MCP helpers: label, merge with the context breakdown, engine-only servers, ccd_ left out', () => {
+  expect(mcpLabel('plugin:gitlab:gitlab')).toBe('gitlab (plugin gitlab)')
+  expect(mcpLabel('plugin:x:y')).toBe('y (plugin x)')
+  expect(mcpLabel('code-graph')).toBe('code-graph')
+  const rows = mergeMcp(MCP_JSON.servers, MCP_TOOLS)
+  const by = Object.fromEntries(rows.map(row => [row.name, row]))
+  expect(by['code-graph']).toMatchObject({ status: 'connected', schemaTokens: 750, loadedTools: 2, calls: 7 }) // configured → connected
+  expect(by.Figma).toMatchObject({ source: 'unknown', status: 'connected', schemaTokens: 900 })
+  expect(by['plugin:gitlab:gitlab'].status).toBe('needs_auth')
+  expect(by.old.status).toBe('disabled')
+  expect(by.ccd_session).toBeUndefined()
+  // a plugin server: the engine spells it plugin_x_y or plugin:x:y, ctt plugin:x:y — one row either way
+  for (const spelled of ['plugin_gitlab_gitlab', 'plugin:gitlab:gitlab']) {
+    const merged = mergeMcp(MCP_JSON.servers, [{ name: `mcp__${spelled}__t`, serverName: spelled, tokens: 120, isLoaded: true }])
+    const plugin = merged.filter(row => row.name.includes('gitlab'))
+    expect(plugin).toHaveLength(1)
+    expect(plugin[0]).toMatchObject({ name: 'plugin:gitlab:gitlab', source: 'plugin', status: 'connected', schemaTokens: 120 })
+  }
+  // junk in the breakdown is skipped, not thrown on
+  expect(mergeMcp([], [null, 5, { name: 'x' }] as never)).toEqual([])
+  expect(mergeMcp([], [{ name: 'a', serverName: 's', tokens: 5, isLoaded: false }])[0].status).toBe('connected') // known to the engine
+})
+
+test('MCP section: rows with status, schema, calls, errors, result tokens; Xem thêm shows per-tool calls', async ($, on) => {
+  resetMcp()
+  const seen: string[][] = []
+  mcpEngine(on, 0, seen)
+  await $.session.start({ cwd: 'C:/repo', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const text = await allText(ui)
+  const call = seen.find(argv => argv.includes('mcp'))!
+  expect(call.slice(call.indexOf('mcp'))).toEqual(['mcp', '--json', '--session', 's1', '--cwd', 'C:/repo'])
+  for (const piece of ['MCP · 4 server', 'gitlab (plugin gitlab)', 'code-graph', 'đã nối', 'tắt',
+    'schema 750 (2 tool)', '7 lần gọi', '1 lỗi', 'kết quả 12k token', 'Figma', 'schema 900 (1 tool)']) {
+    expect(text).toContain(piece)
+  }
+  expect(text).not.toContain('ccd_session')
+  expect(text).not.toContain('cg_impact ×5')
+  await ui.press({ key: 'mcp-more-code-graph' })
+  expect(await allText(ui)).toContain('cg_impact ×5 · cg_search ×2')
+  await ui.unmount()
+})
+
+test('MCP section: a server that needs login adds a line to Cần chú ý', async ($, on) => {
+  resetMcp()
+  mcpEngine(on)
+  await $.session.start({ cwd: 'C:/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const text = await allText(ui)
+  expect(text).toContain('Cần chú ý')
+  expect(text).toContain('gitlab (plugin gitlab) cần đăng nhập — chạy /mcp')
+  expect(text).toContain('cần đăng nhập')
+  await ui.unmount()
+})
+
+test('MCP section: a failing ctt shows one line and keeps the pane and the engine-only rows', async ($, on) => {
+  resetMcp()
+  mcpEngine(on, 1)
+  await $.session.start({ cwd: 'C:/repo', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const text = await allText(ui)
+  expect(text).toContain('Chưa đọc được MCP')
+  expect(text).toContain('Figma') // from the context breakdown alone
+  expect(text).toContain('Phiên này') // the rest of the pane still draws
+  expect(text).not.toContain('cần đăng nhập — chạy /mcp')
   await ui.unmount()
 })

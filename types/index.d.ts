@@ -65,6 +65,24 @@ export type ShipSnap = {
   gates?: ShipGate[]
 }
 export type ShipGate = { id: string; step: string; question: string; options: string[] }
+/** One row of the "MCP" section: `ctt mcp --json` merged with the engine's context breakdown. */
+export type McpServerRow = {
+  name: string
+  source: string
+  type?: string
+  /** connected (schemas in context) | configured | needs_auth | disabled */
+  status: string
+  calls: number
+  errors: number
+  resultTokens: number
+  lastAt?: string
+  /** tool → calls */
+  tools: Record<string, number>
+  /** schema tokens of the tools loaded in context */
+  schemaTokens: number
+  loadedTools: number
+}
+export type McpSnap = { at: number; rows: McpServerRow[]; error?: string }
 export type UsageSnap = {
   at: number
   ship?: ShipSnap

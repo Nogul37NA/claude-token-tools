@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, UiCopyArgs } from 'claude-code'
 
-import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, QuestionRow, ShipGate, ShipSnap, Spend, UsageSnap } from '../types'
+import type { AgentRow, CallRow, EventRow, Gauge, InboxItem, McpServerRow, McpSnap, QuestionRow, ShipGate, ShipSnap, Spend, UsageSnap } from '../types'
 import { inAutoMode, judge, roleFor } from './permissions'
 import type { Profile } from './permissions'
 import { cheaperText, hintSection, minCalls, nudgeText } from './delegation'
@@ -66,6 +66,7 @@ export async function draftHandoff($: EngineInterface, surface?: UiCopyArgs['sur
 }
 
 const USAGE_EVERY = 5
+const MCP_EVERY = 20 // the server list barely changes: 60 s at REFRESH_MS = 3 s
 const PANE_ALIVE_MS = 30_000
 let ticks = 0
 let lastDrawnAt = 0
@@ -270,6 +271,121 @@ export async function refreshUsage($: EngineInterface): Promise<void> {
   } finally {
     refreshing = false
   }
+}
+
+// "MCP" section: `ctt mcp --json` (config files, auth cache, transcripts) merged with the engine's context breakdown.
+// Display only: nothing here connects to or calls a server. Read every MCP_EVERY ticks (60 s) while drawn, and on the first drawing.
+type CttMcpServer = {
+  name: string; source?: string; type?: string; status?: string; calls?: number; errors?: number
+  result_tokens?: number; last_at?: string | null; tools?: Record<string, number>
+}
+type ContextTool = { name: string; serverName: string; tokens: number; isLoaded: boolean }
+let mcpSnap: McpSnap = { at: 0, rows: [] }
+let mcpBusy = false
+let mcpOpen: boolean | undefined // undefined: open when there are 4 servers or fewer
+const mcpMore = new Set<string>()
+const MCP_OPEN_MAX = 4
+
+/** `plugin:x:y` → `y (plugin x)`; other names unchanged. */
+export function mcpLabel(name: string): string {
+  const match = /^plugin:([^:]+):(.+)$/.exec(name)
+  return match ? `${match[2]} (plugin ${match[1]})` : name
+}
+
+/** ctt's servers plus the schemas in context. A server with a loaded tool is connected whatever the config says;
+ *  one only the engine knows (e.g. a built-in connector) gets a row of source "unknown". ccd_ servers are left out. */
+export function mergeMcp(servers: readonly CttMcpServer[], tools: readonly ContextTool[]): McpServerRow[] {
+  // Keyed the way tool prefixes spell a server (anything outside [A-Za-z0-9_-] becomes "_"), so the engine's
+  // "plugin_x_y" and /mcp's "plugin:x:y" are one row.
+  const key = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, '_')
+  const rows = new Map<string, McpServerRow>()
+  for (const server of servers) {
+    if (!server?.name || server.name.startsWith('ccd_')) continue
+    rows.set(key(server.name), {
+      name: server.name, source: server.source ?? 'unknown', type: server.type, status: server.status ?? 'configured',
+      calls: server.calls ?? 0, errors: server.errors ?? 0, resultTokens: server.result_tokens ?? 0,
+      lastAt: server.last_at ?? undefined, tools: server.tools ?? {}, schemaTokens: 0, loadedTools: 0,
+    })
+  }
+  for (const tool of tools) {
+    if (!tool || typeof tool !== 'object' || typeof tool.serverName !== 'string' || !tool.serverName ||
+      tool.serverName.startsWith('ccd_')) continue
+    const row = rows.get(key(tool.serverName)) ?? {
+      name: tool.serverName, source: 'unknown', status: 'connected', calls: 0, errors: 0, resultTokens: 0, tools: {},
+      schemaTokens: 0, loadedTools: 0,
+    }
+    if (tool.isLoaded) {
+      row.schemaTokens += Number(tool.tokens) || 0
+      row.loadedTools += 1
+      row.status = 'connected'
+    }
+    rows.set(key(row.name), row)
+  }
+  return [...rows.values()].sort((a, b) => b.schemaTokens - a.schemaTokens || b.calls - a.calls || a.name.localeCompare(b.name))
+}
+
+const MCP_STATUS: Record<string, [text: string, tone: Tone]> = {
+  connected: ['đã nối', 'success'], needs_auth: ['cần đăng nhập', 'warning'], configured: ['đã cấu hình', 'inactive'],
+  disabled: ['tắt', 'inactive'], unapproved: ['chưa duyệt', 'warning'],
+}
+
+/** "Cần chú ý" lines for servers waiting for a login. */
+export function mcpAuthLines(rows: readonly McpServerRow[]): string[] {
+  return rows.filter(row => row.status === 'needs_auth').map(row => `${mcpLabel(row.name)} cần đăng nhập — chạy /mcp`)
+}
+
+export async function refreshMcp($: EngineInterface): Promise<void> {
+  if (mcpBusy) return
+  mcpBusy = true
+  try {
+    let tools: ContextTool[] = []
+    try {
+      const used = await $.session.usage({ breakdown: 'summary' })
+      const listed: unknown = used.context?.breakdown?.mcpTools
+      tools = Array.isArray(listed) ? (listed as unknown[]).filter((tool): tool is ContextTool => !!tool && typeof tool === 'object') : []
+    } catch {
+      // no breakdown on this build: ctt's figures alone
+    }
+    let servers: CttMcpServer[] = []
+    let error: string | undefined
+    try {
+      let cwd = projectRoot
+      try {
+        cwd = (await $.session.cwd()) || projectRoot
+      } catch {
+        // older engine without session.cwd
+      }
+      const data = JSON.parse(await runCtt($, ['mcp', '--json', '--session', await $.session.id(), '--cwd', cwd || '.'])) as
+        { servers?: CttMcpServer[]; error?: string }
+      servers = data.servers ?? []
+      error = data.error
+    } catch (failure) {
+      error = `Chưa đọc được MCP: ${String(failure).slice(0, 120)}`
+    }
+    mcpSnap = { ...mcpSnap, rows: mergeMcp(servers, tools), error }
+  } catch {
+    // the pane must never break a session
+  } finally {
+    // Set even when the merge threw: `at` 0 would make the next redraw start another read, forever.
+    try {
+      mcpSnap = { ...mcpSnap, at: await $.clock.now() }
+    } catch {
+      mcpSnap = { ...mcpSnap, at: Date.now() }
+    }
+    mcpBusy = false
+    try {
+      $.ui.invalidate('ui.render')
+    } catch {
+      // not mounted
+    }
+  }
+}
+
+export function resetMcp(): void {
+  mcpSnap = { at: 0, rows: [] }
+  mcpBusy = false
+  mcpOpen = undefined
+  mcpMore.clear()
 }
 
 const STATUS_ICON: Record<string, string> = {
@@ -1082,7 +1198,10 @@ export const register: Register = on => {
     $.clock.every(REFRESH_MS, () => {
       $.ui.invalidate('ui.render')
       ticks += 1
-      if (ticks % USAGE_EVERY === 0 && Date.now() - lastDrawnAt < PANE_ALIVE_MS) void refreshUsage($)
+      if (ticks % USAGE_EVERY === 0 && Date.now() - lastDrawnAt < PANE_ALIVE_MS) {
+        void refreshUsage($)
+      }
+      if (ticks % MCP_EVERY === 0 && Date.now() - lastDrawnAt < PANE_ALIVE_MS) void refreshMcp($)
     })
     return next(e)
   })
@@ -1354,6 +1473,9 @@ export const register: Register = on => {
     const snap = await read($, usage)
     lastDrawnAt = Date.now()
     if (snap.at === 0) void refreshUsage($) // first drawing: fetch figures right away
+    if (mcpSnap.at === 0 && !mcpBusy) void refreshMcp($)
+    const authLines = mcpAuthLines(mcpSnap.rows)
+    const mcpShown = mcpOpen ?? mcpSnap.rows.length <= MCP_OPEN_MAX
     const working = rows.filter(row => row.status === 'running').length
     const problems = rows.reduce((sum, row) => sum + row.errors + (row.blocked ?? 0), 0)
     const urgent = attention(log, now)
@@ -1387,12 +1509,13 @@ export const register: Register = on => {
           </Text>
           <Text color={problems ? 'error' : 'subtle'}>{problems ? `${problems} lỗi / bị chặn` : 'không có lỗi'}</Text>
         </Box>
-        {(urgent.length > 0 || nudge || shipNeeds.length > 0) && (
+        {(urgent.length > 0 || nudge || shipNeeds.length > 0 || authLines.length > 0) && (
           <Box key="attention" flexDirection="column" borderStyle="round" paddingX={1}
             borderColor={urgent.some(event => event.text.startsWith('⛔')) ? 'error' : 'warning'}>
             <Text weight="semibold">Cần chú ý</Text>
             {nudge && <Text color="warning" wrap="wrap">{nudge}</Text>}
             {shipNeeds.map(line => <Text color="warning" wrap="wrap">{line}</Text>)}
+            {authLines.map(line => <Text key={`auth-${line}`} color="warning" wrap="wrap">{`🔑 ${line}`}</Text>)}
             {urgent.map(event => (
               <Text color={eventTone(event.text)} wrap="wrap">
                 {event.text} <Text dimColor>· {ago(now - event.at)} trước</Text>
@@ -1738,6 +1861,62 @@ export const register: Register = on => {
           <Text dimColor size="caption" mono wrap="wrap">Token phiên: {tokenParts(snap.total)}</Text>
         )}
         {snap.error && <Text color="warning" wrap="wrap">{snap.error}</Text>}
+
+        {/* 3b. MCP servers: config + context schemas + calls, display only */}
+        {(mcpSnap.rows.length > 0 || mcpSnap.error) && (
+          <Box key="mcp" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
+            <Box flexDirection="row" justifyContent="space-between" gap={1} alignItems="center">
+              <Text weight="semibold">
+                MCP · {mcpSnap.rows.length} server
+                {(() => {
+                  const schema = mcpSnap.rows.reduce((sum, row) => sum + row.schemaTokens, 0)
+                  return schema ? ` · ${mtok(schema)} token schema trong context` : ''
+                })()}
+              </Text>
+              {mcpSnap.rows.length > 0 && (
+                <Button key="mcp-toggle" variant="secondary" onPress={() => {
+                  mcpOpen = !mcpShown
+                  $.ui.invalidate('ui.render')
+                }}>
+                  {mcpShown ? 'Thu gọn' : 'Mở ra'}
+                </Button>
+              )}
+            </Box>
+            {mcpSnap.error && <Text color="warning" size="footnote" wrap="wrap">{mcpSnap.error}</Text>}
+            {mcpShown && mcpSnap.rows.map(row => {
+              const [statusText, statusTone] = MCP_STATUS[row.status] ?? [row.status, 'inactive' as Tone]
+              const toolCalls = Object.entries(row.tools).sort((a, b) => b[1] - a[1])
+              const more = mcpMore.has(row.name)
+              return (
+                <Box key={`mcp-${row.name}`} flexDirection="column" marginTop={1}>
+                  <Box flexDirection="row" justifyContent="space-between" gap={1}>
+                    <Text weight="semibold" wrap="truncate-end">{mcpLabel(row.name)}</Text>
+                    <Text color={statusTone}>{statusText}</Text>
+                  </Box>
+                  <Text dimColor size="footnote" wrap="wrap">
+                    {row.source}{row.type ? ` · ${row.type}` : ''}
+                    {` · schema ${row.schemaTokens ? `${mtok(row.schemaTokens)} (${row.loadedTools} tool)` : '0'}`}
+                    {` · ${row.calls} lần gọi`}
+                    {row.errors ? ` · ${row.errors} lỗi` : ''}
+                    {` · kết quả ${mtok(row.resultTokens)} token`}
+                  </Text>
+                  {toolCalls.length > 0 && (
+                    <Box flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                      <Button key={`mcp-more-${row.name}`} variant="secondary" onPress={() => {
+                        if (mcpMore.has(row.name)) mcpMore.delete(row.name)
+                        else mcpMore.add(row.name)
+                        $.ui.invalidate('ui.render')
+                      }}>
+                        {more ? 'Bớt' : 'Xem thêm'}
+                      </Button>
+                      {more && <Text size="footnote" mono wrap="wrap">{toolCalls.map(([tool, n]) => `${tool} ×${n}`).join(' · ')}</Text>}
+                    </Box>
+                  )}
+                </Box>
+              )
+            })}
+          </Box>
+        )}
 
         {/* 4. Actions */}
         <Box flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">

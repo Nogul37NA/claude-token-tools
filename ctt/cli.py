@@ -166,6 +166,13 @@ def cmd_agents(args):
         print(f"{agent['call']:<28} {agent['level']:<8} vai {agent['role'] or '—':<10} {agent['model'] or 'inherit'}")
 
 
+def cmd_mcp(args):
+    import json
+    from ctt import mcp
+    data = mcp.list_servers(args.cwd, args.projects_dir, args.session)
+    print(json.dumps(data, ensure_ascii=False) if args.json else mcp.describe(data))
+
+
 def cmd_delegation(args):
     import json
     from ctt import delegation
@@ -514,7 +521,14 @@ def main(argv=None):
     command.add_argument("--policy")
     command.set_defaults(handler=cmd_agents)
 
-    command = sub.add_parser("delegation", help="giao việc cho agent có lời không, và ngưỡng hòa vốn theo context")
+    command = sub.add_parser("mcp", help="MCP server của một phiên (nguồn, trạng thái, số lần gọi, lỗi, token kết quả) — cho khung")
+    command.add_argument("--session", help="phiên để thống kê lần gọi (bỏ trống: chỉ liệt kê server)")
+    command.add_argument("--cwd", default=str(Path.cwd()))
+    command.add_argument("--json", action="store_true")
+    command.add_argument("--projects-dir", default=str(config.projects_dir()))
+    command.set_defaults(handler=cmd_mcp)
+
+    command = sub.add_parser("delegation",help="giao việc cho agent có lời không, và ngưỡng hòa vốn theo context")
     command.add_argument("--days", type=int, default=30)
     command.add_argument("--main-model", help="model phiên chính cho bảng hòa vốn, vd claude-fable-5-2")
     command.add_argument("--json", action="store_true", help="ngưỡng cho khung (đo được hoặc mặc định của policy)")
