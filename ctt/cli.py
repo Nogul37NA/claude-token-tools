@@ -556,6 +556,7 @@ def main(argv=None):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog="ctt", description=f"claude-token-tools {__version__}")
+    parser.add_argument("--version", action="version", version=f"ctt {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name, handler, help_text in (("report", cmd_report, "token theo ngày / project / phiên"),
