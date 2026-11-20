@@ -413,9 +413,27 @@ const roleDenied = new Set<string>()
 let profileFailedAt = 0
 const PROFILE_RETRY_MS = 60_000
 
+// 0.23.1: the profile is read again in the background once a minute, so a hand edit of permissions.toml or
+// policy.toml takes effect without restarting the app (seen 18/11/2026: `[auto_mode] ask = "deny"` written to the
+// file changed nothing in the running session). Until the new one is in, the one already held keeps judging.
+const PROFILE_TTL_MS = 60_000
+let profileAt = 0
+let profileRefreshing = false
+
+/** The engine's clock (a test moves it), the machine's where the engine has none. */
+async function clockNow($: EngineInterface): Promise<number> {
+  try {
+    return await $.clock.now()
+  } catch {
+    return Date.now()
+  }
+}
+
 /** For tests: forget the profile so the next load reads it again. */
 export function resetProfile(): void {
   profileLoad = undefined
+  profileAt = 0
+  profileRefreshing = false
   profileFailedAt = 0
   profileError = ''
   lastBlock = ''
@@ -491,6 +509,7 @@ export async function changeRole($: EngineInterface, role: string, args: string[
     if (data.error) throw new Error(data.error)
     const profile = parseProfile(JSON.stringify(data))
     profileLoad = Promise.resolve(profile)
+    profileAt = await clockNow($)
     lastProfile = profile
     roleError.delete(role)
     const now = await $.clock.now()
@@ -501,16 +520,41 @@ export async function changeRole($: EngineInterface, role: string, args: string[
   $.ui.invalidate('ui.render')
 }
 
-/** Read once and kept; a failure is retried at most once a minute (Python missing, a bad user file being fixed). */
-export function loadProfile($: EngineInterface): Promise<Profile | undefined> {
-  if (profileLoad) return profileLoad
+/** Read and kept, re-read in the background once a minute; a first read that fails is retried at most once a
+ *  minute (Python missing, a bad user file being fixed). A re-read that fails leaves the held profile judging. */
+export async function loadProfile($: EngineInterface): Promise<Profile | undefined> {
+  if (profileLoad) {
+    const held = profileLoad
+    const now = await clockNow($)
+    if (profileAt && now - profileAt > PROFILE_TTL_MS && !profileRefreshing) {
+      profileRefreshing = true
+      profileAt = now
+      void runCtt($, ['permissions', '--json'])
+        .then(stdout => {
+          const profile = parseProfile(stdout)
+          profileLoad = Promise.resolve(profile)
+          lastProfile = profile
+          profileError = ''
+        })
+        .catch(error => {
+          profileError = `Chưa đọc lại được hồ sơ quyền, vẫn dùng bản trước: ${String(error).slice(0, 160)}`
+        })
+        .finally(() => {
+          profileRefreshing = false
+        })
+    }
+    return held
+  }
   if (Date.now() - profileFailedAt < PROFILE_RETRY_MS) return Promise.resolve(undefined)
   profileLoad = runCtt($, ['permissions', '--json'])
     .then(stdout => {
       const profile = parseProfile(stdout)
       profileError = ''
       lastProfile = profile
-      return profile
+      return clockNow($).then(now => {
+        profileAt = now
+        return profile
+      })
     })
     .catch(error => {
       profileError = `Chưa đọc được hồ sơ quyền, agent chưa bị giới hạn: ${String(error).slice(0, 160)}`

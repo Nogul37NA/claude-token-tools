@@ -121,6 +121,7 @@ Báo cáo ghi vào `~/.claude/claude-token-tools/reports/` (đổi bằng `--out
   ask = "deny"
   ```
   Phiên chính không có vai nên không bị quy tắc nào ở đây chạm tới, ở chế độ nào cũng vậy.
+- *Sửa file bằng tay có hiệu lực không cần khởi động lại (0.23.1)*: khung đọc lại hồ sơ quyền (`permissions.toml`, và phần `[agent_role]` / `[budget]` / `[sessions]` của `policy.toml`) ở nền mỗi phút một lần; trước đó nó chỉ đọc một lần lúc plugin nạp. Bản đọc lại bị lỗi (file TOML sai) thì khung báo một dòng và vẫn dùng bản trước.
 
 **Bộ agent theo vai trong plugin (0.15.0):** `agents/` có 8 agent gọi được ở mọi project: `token-tools:planner`, `architect`, `research`, `developer`, `debugger`, `tester`, `reviewer`, `docs` — model/effort theo `[roles]` của policy (test giữ hai bên khớp), khởi động bằng quy ước của project đang mở (`CLAUDE.md`, `AGENTS.md`, `ai-rules/AGENT.md`), làm đúng phạm vi vai, báo cáo ngắn. Agent riêng của project (`.claude/agents`) vẫn dùng như cũ. `py -I bin/ctt.py agents --cwd <repo>` liệt kê agent gọi được theo mức project / người dùng / plugin; khung ghi mức cạnh model trên thẻ và liệt kê agent của từng vai trong "Quyền hạn".
 
