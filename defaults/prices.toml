@@ -65,12 +65,16 @@ cache_write_5m = 2.5
 cache_write_1h = 4.0
 
 [models.claude-haiku-5-5]
+# Đã đối chiếu tài liệu Claude API (2026-11): $0,10 / $0,50 khi prompt ≤ 100K token, $0,50 / $2,50 khi dài hơn;
+# đọc cache 0,1 ×, ghi cache 5 phút 1,25 ×, 1 giờ 2 × giá input của bậc tương ứng.
 input = 0.10
 output = 0.50
 cache_read = 0.01
 cache_write_5m = 0.125
 cache_write_1h = 0.20
-assumed = true
+long_above = 100000
+long_input = 0.50
+long_output = 2.50
 
 [models.claude-haiku-4-5]
 input = 1.0

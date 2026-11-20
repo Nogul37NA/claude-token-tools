@@ -82,7 +82,7 @@ Báo cáo ghi vào `~/.claude/claude-token-tools/reports/` (đổi bằng `--out
 ## Lưu ý
 
 - Agent cùng tên ở project **thay thế toàn bộ** agent ở `~/.claude/agents` (không gộp) → model phải ghi vào file của project; đó là lý do có `sync`.
-- Chi phí là **giá API quy đổi**. Phiên chính ghi cache TTL 1h (2× input), subagent TTL 5 phút (1,25×). Giá đọc cache có `assumed = true` trong `prices.toml` là giả định — đối chiếu ở GĐ2.
+- Chi phí là **giá API quy đổi**. Phiên chính ghi cache TTL 1h (2× input), subagent TTL 5 phút (1,25×). Giá đọc cache có `assumed = true` trong `prices.toml` là giả định — đối chiếu ở GĐ2. Model có hai bậc giá theo độ dài prompt (Haiku 5.5: prompt > 100K token tính $0,50 / $2,50 thay vì $0,10 / $0,50, cache theo cùng tỉ lệ) khai bằng `long_above`, `long_input`, `long_output`.
 - Loại task gán **sau khi làm** (số file đã sửa, số lượt). Ước lượng trước khi làm: GĐ5.
 - Claude Code tự xoá transcript cũ theo `cleanupPeriodDays` — mốc ban đầu phải lưu thành CSV, không tính lại được về sau.
 

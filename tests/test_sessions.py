@@ -38,6 +38,18 @@ class PricingTest(unittest.TestCase):
         self.assertFalse(known)
         self.assertAlmostEqual(usd, 20)
 
+    def test_long_prompt_uses_second_rate_card(self):
+        import tomllib
+        defaults = Path(__file__).resolve().parent.parent / "defaults" / "prices.toml"
+        table = PriceTable(tomllib.loads(defaults.read_text(encoding="utf-8")))
+        short, _ = table.cost(self.request("claude-haiku-5-5", input_tokens=50_000, output_tokens=1_000_000,
+                                           cache_read=50_000))
+        self.assertAlmostEqual(short, 0.10 * 0.05 + 0.50 + 0.01 * 0.05)
+        long, _ = table.cost(self.request("claude-haiku-5-5", input_tokens=1_000, output_tokens=1_000_000,
+                                          cache_read=100_000, cache_write_5m=1_000))
+        self.assertAlmostEqual(long, 0.50 * 0.001 + 2.50 + 0.05 * 0.1 + 0.625 * 0.001)
+        self.assertIs(table.lookup("claude-opus-5-5")[0].at(500_000), table.lookup("claude-opus-5-5")[0])
+
     def test_bad_fallback_rejected(self):
         with self.assertRaises(ValueError):
             PriceTable({"fallback": {"model": "nope"}, "models": {}})

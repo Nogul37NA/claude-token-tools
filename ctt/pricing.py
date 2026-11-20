@@ -1,5 +1,5 @@
 """Model prices (USD per 1M tokens) and request cost."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ctt.config import load_layered
 
@@ -12,6 +12,20 @@ class Price:
     cache_write_5m: float
     cache_write_1h: float
     assumed: bool = False
+    # Second rate card for long prompts (e.g. Haiku 5.5 above 100K): a prompt (input + cache read + cache write)
+    # over long_above tokens pays long_input / long_output, and the cache rates scale by long_input / input.
+    long_above: int = 0
+    long_input: float = 0.0
+    long_output: float = 0.0
+
+    def at(self, prompt_tokens):
+        """The rate card that applies to a request whose prompt is prompt_tokens long."""
+        if not self.long_above or prompt_tokens <= self.long_above or not self.input:
+            return self
+        scale = self.long_input / self.input
+        return replace(self, input=self.long_input, output=self.long_output, cache_read=self.cache_read * scale,
+                       cache_write_5m=self.cache_write_5m * scale, cache_write_1h=self.cache_write_1h * scale,
+                       long_above=0)
 
 
 class PriceTable:
@@ -31,6 +45,7 @@ class PriceTable:
 
     def cost(self, request):
         price, known = self.lookup(request.model)
+        price = price.at(request.input_tokens + request.cache_read + request.cache_write_5m + request.cache_write_1h)
         usd = (request.input_tokens * price.input
                + request.output_tokens * price.output
                + request.cache_read * price.cache_read

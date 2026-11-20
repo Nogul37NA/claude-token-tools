@@ -85,7 +85,7 @@ def user_prompt_submit(data, opts, now=None):
     if not found:
         return {}
     context, model, last_at = found
-    price = _price(model)
+    price = _price(model).at(context)
     messages = []
 
     idle_minutes = (now - last_at).total_seconds() / 60

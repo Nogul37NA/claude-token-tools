@@ -90,7 +90,7 @@ def read_requests(path, session, is_subagent):
 
 
 def _usd(prices, model, *, read=0, write_5m=0, write_1h=0, input_tokens=0, output=0):
-    price, _ = prices.lookup(model)
+    price = prices.lookup(model)[0].at(input_tokens + read + write_5m + write_1h)
     return (input_tokens * price.input + output * price.output + read * price.cache_read
             + write_5m * price.cache_write_5m + write_1h * price.cache_write_1h) / 1e6
 
