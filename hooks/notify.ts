@@ -176,7 +176,9 @@ export function tickWork(tick: number, paneOpen: boolean, settings: NotifySettin
 
 /** Why a send did not happen, with the way out. */
 export function failureText(reason: string): string {
-  const hint = reason === 'disabled' || reason === 'no-channel' ? ' — bật thông báo của app' : ''
+  const hint = reason === 'disabled' || reason === 'no-channel' ? ' — bật thông báo của app'
+    // no-surface: no terminal and no host that raises a mod's notification (the desktop app today, -p, the SDK).
+    : reason === 'no-surface' ? ' — app này chưa nhận thông báo từ mod; xem mục Cần chú ý trong khung' : ''
   return `không gửi được (${reason})${hint}`
 }
 

@@ -142,6 +142,8 @@ test('settings: defaults (on, 60 s, MCP off), bad stored values ignored, state t
   expect(stateText({ ...DEFAULT_NOTIFY, delaySec: 0 })).toBe('Bật · gửi ngay')
   expect(stateText({ ...DEFAULT_NOTIFY, on: false })).toBe('Tắt')
   expect(failureText('no-channel')).toContain('bật thông báo của app')
+  expect(failureText('no-surface')).toBe('không gửi được (no-surface) — app này chưa nhận thông báo từ mod; xem mục Cần chú ý trong khung')
+  expect(failureText('refused')).toBe('không gửi được (refused)')
   expect(failureText('refused')).not.toContain('bật thông báo của app')
 })
 
