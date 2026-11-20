@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ago, alwaysAskWords, attention, cardMeta, describeCall, eventTone, isInternalTool, meter, percentTone,
   usageItems, modelLabel, mtok, parseAgentUsage, pickLimits,
-  gateDraft, openerFor, mcpLabel, mergeMcp, refreshUsage, resetMcp, resetProfile, raceAlerts, raceRow, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
+  gateDraft, openerFor, mcpLabel, mergeMcp, refreshUsage, resetMcp, resetNotify, resetProfile, raceAlerts, raceRow, shipAlerts, shipLine, shortenPaths, tokenParts, tokenSplit, toolLabel, usd,
 } from '../hooks/register'
 import { globToRegExp, inAutoMode, judge, relativePath, roleFor, splitCommand } from '../hooks/permissions'
 import type { Profile } from '../hooks/permissions'
@@ -65,6 +65,8 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], failBash = false,
   // An in-memory stand-in for the shared store; tests reach it through `stores` (one per test run, the last).
   const store = new Map<string, unknown>()
   stores.push(store)
+  resetNotify()
+  store.set('notify-settings', { on: false }) // these tests are about the pane, not about notifications
   on('store.set', (_, e) => { store.set(e.key, JSON.parse(JSON.stringify(e.value))); return { value: undefined } })
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.keys', () => ({ value: [...store.keys()] }))

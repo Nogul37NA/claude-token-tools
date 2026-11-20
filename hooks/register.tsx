@@ -9,6 +9,11 @@ import type { Thresholds } from './delegation'
 import { agentBudget, budgetLine, level, levelText, modelDiffers } from './budget'
 import type { Level } from './budget'
 import {
+  applyPlan, cachedItems, CATEGORIES, CATEGORY_LABEL, DEFAULT_NOTIFY, DELAYS, emptySent, failureText, normalizeSettings, stateText, notifyItems, notifyOptions,
+  notifySig, planNotify, tickWork,
+} from './notify'
+import type { Category, ItemCache, NotifySettings, SentState } from './notify'
+import {
   address, briefKey, DEFAULT_LIMITS, draftQuestion, matchPending, PENDING_PREFIX, liveSessions, modeClash, newCode, parentMark, projectName, promptHint, readMark,
   readParent, replyTarget, sessionTree, spawnVerdict, staleKeys, stripMarks, summaryLine, SUMMARY_PREFIX, treeUsd,
   withQuestion,
@@ -30,7 +35,7 @@ const usage = atom({ plugin: 'token-tools', key: 'usage' } as const, EMPTY_USAGE
 const inbox = atom({ plugin: 'token-tools', key: 'inbox' } as const, [] as InboxItem[], { shape: 'inbox-1' })
 const questions = atom({ plugin: 'token-tools', key: 'questions' } as const, [] as QuestionRow[], { shape: 'questions-1' })
 
-// Usage is read from transcripts by the plugin's own `bin/ctt.py` (Python), every USAGE_EVERY ticks while
+// Usage is read from transcripts by the plugin's own `bin/ctt.py` (Python), every 5 ticks while
 // the pane has been drawn in the last PANE_ALIVE_MS (no work when nobody looks).
 // From this context fill the pane offers "Bàn giao": a fresh session reading a ≤ 2k-token note costs less than
 // re-reading the whole context on every call. The button only drafts the command; the person sends it.
@@ -65,8 +70,7 @@ export async function draftHandoff($: EngineInterface, surface?: UiCopyArgs['sur
   await update($, events, list => [...list, { at: now, text: `⇢ ${text}` }].slice(-MAX_EVENTS))
 }
 
-const USAGE_EVERY = 5
-const MCP_EVERY = 20 // the server list barely changes: 60 s at REFRESH_MS = 3 s
+// Which tick refreshes what: `tickWork` in notify.ts (usage every 5 ticks, MCP every 20, while drawn).
 const PANE_ALIVE_MS = 30_000
 let ticks = 0
 let lastDrawnAt = 0
@@ -303,7 +307,7 @@ export async function refreshUsage($: EngineInterface): Promise<void> {
 }
 
 // "MCP" section: `ctt mcp --json` (config files, auth cache, transcripts) merged with the engine's context breakdown.
-// Display only: nothing here connects to or calls a server. Read every MCP_EVERY ticks (60 s) while drawn, and on the first drawing.
+// Display only: nothing here connects to or calls a server. Read every 20 ticks (60 s) while drawn, and on the first drawing.
 type CttMcpServer = {
   name: string; source?: string; type?: string; status?: string; calls?: number; errors?: number
   result_tokens?: number; last_at?: string | null; tools?: Record<string, number>
@@ -415,6 +419,136 @@ export function resetMcp(): void {
   mcpBusy = false
   mcpOpen = undefined
   mcpMore.clear()
+}
+
+// 0.26: notifications for what "Cần chú ý" lists, sent from the tick so they work with the pane closed. Settings are
+// per user (`$.store`); what was sent is kept per session in memory. The 🔔/🔕 lines of the log live in their own list
+// (`notifyLog`, merged into the pane's log when drawn) so they can never push a ⛔/❓ event out of `events`.
+const NOTIFY_KEY = 'notify-settings'
+const NOTIFY_LOG_MAX = 20
+let notifySettings: NotifySettings = DEFAULT_NOTIFY
+let notifyLoaded = false
+let notifyState: SentState = emptySent()
+let notifyBusy = false
+let notifyLast: { at: number; text: string; reason?: string } | undefined
+let notifyLog: EventRow[] = []
+let itemsCache: ItemCache | undefined
+
+export function resetNotify(): void {
+  notifySettings = DEFAULT_NOTIFY
+  notifyLoaded = false
+  notifyState = emptySent()
+  notifyBusy = false
+  notifyLast = undefined
+  notifyLog = []
+  itemsCache = undefined
+}
+
+/** The settings, or undefined when the store could not be read: then nothing is sent or saved, and the next call tries again. */
+export async function loadNotify($: EngineInterface): Promise<NotifySettings | undefined> {
+  if (notifyLoaded) return notifySettings
+  try {
+    notifySettings = normalizeSettings(await $.store.get(NOTIFY_KEY))
+    notifyLoaded = true
+    return notifySettings
+  } catch {
+    return undefined
+  }
+}
+
+export async function setNotify($: EngineInterface, change: (current: NotifySettings) => NotifySettings): Promise<void> {
+  const current = await loadNotify($)
+  if (!current) return // never write defaults over settings that could not be read
+  notifySettings = normalizeSettings(change(current))
+  try {
+    await $.store.set(NOTIFY_KEY, notifySettings)
+  } catch {
+    // kept in memory for this run
+  }
+  await notifyTick($)
+  $.ui.invalidate('ui.render')
+}
+
+function logNotify(at: number, lines: string[]): void {
+  notifyLog = [...notifyLog, ...lines.map(text => ({ at, text }))].slice(-NOTIFY_LOG_MAX)
+}
+
+/** One notification, sent without holding the tick: the promise may only settle when the client delivers it. The key is
+ *  already marked sent, so nothing sends it twice meanwhile. */
+async function sendOne($: EngineInterface, item: NotifyItem, settings: NotifySettings, at: number): Promise<void> {
+  let reason: string | undefined
+  try {
+    const sent = await $.ui.notify(item.text, notifyOptions(item, settings))
+    if (!sent.isSent) reason = sent.reason
+  } catch (error) {
+    reason = `error: ${String(error).slice(0, 80)}`
+  }
+  if (reason && notifyState.active[item.key]) {
+    notifyState = { ...notifyState, active: { ...notifyState.active, [item.key]: { ...notifyState.active[item.key], ok: false } } }
+  }
+  notifyLast = reason ? { at, text: item.text, reason } : { at, text: item.text }
+  logNotify(at, [reason ? `🔕 ${item.key}: ${failureText(reason)}` : `🔔 đã gửi ${item.key}: ${item.text}`])
+  try {
+    $.ui.invalidate('ui.render')
+  } catch {
+    // not mounted
+  }
+}
+
+/** Send what is new, take back what resolved. Never throws; every send and cancel is one line of the log. */
+export async function notifyTick($: EngineInterface): Promise<void> {
+  if (notifyBusy) return
+  notifyBusy = true
+  let sends: NotifyItem[] = []
+  let settings: NotifySettings | undefined
+  let now = 0
+  try {
+    settings = await loadNotify($)
+    if (!settings) return // store unreadable: send nothing, try again next tick
+    if (!settings.on && !Object.keys(notifyState.active).length) return // nothing to send, nothing to take back
+    now = await $.clock.now()
+    const snap = await read($, usage)
+    const log = await read($, events)
+    // Rebuild the list only when its inputs changed (usage / events / MCP read, or 30 s for the 15 min window).
+    itemsCache = cachedItems(itemsCache, notifySig(snap.at, mcpSnap.at, log, now), () => notifyItems({
+      project: projectName(projectRoot) || 'phiên', now, events: log, ship: snap.ship, race: snap.race,
+      budget: snap.budget, mcp: mcpSnap.rows,
+    })).cache
+    const items = itemsCache.items
+    const plan = planNotify(items, notifyState, settings, now)
+    if (!plan.send.length && !plan.cancel.length && !plan.dropped.length) return
+    const lines: string[] = []
+    for (const key of plan.cancel) {
+      if (notifyState.active[key]?.ok) {
+        try {
+          await $.ui.cancelNotify(key)
+        } catch {
+          // nothing held under that key
+        }
+      }
+      lines.push(`🔕 thu hồi thông báo ${key}`)
+    }
+    if (plan.dropped.length) lines.push(`🔕 chưa gửi ${plan.dropped.length} thông báo: quá 6 trong 10 phút, gửi khi có chỗ`)
+    // Marked sent before the call goes out: a second tick cannot send the same key again.
+    notifyState = applyPlan(notifyState, plan, now, {}, items)
+    logNotify(now, lines)
+    sends = plan.send
+  } catch {
+    // the pane must never break a session
+  } finally {
+    notifyBusy = false
+  }
+  for (const item of sends) void sendOne($, item, settings!, now)
+}
+
+/** One 3 s tick: redraw, refresh what the pane (or a notification) needs, notify. */
+export async function onTick($: EngineInterface): Promise<void> {
+  $.ui.invalidate('ui.render')
+  ticks += 1
+  const work = tickWork(ticks, Date.now() - lastDrawnAt < PANE_ALIVE_MS, notifySettings)
+  if (work.usage) void refreshUsage($)
+  if (work.mcp) void refreshMcp($)
+  await notifyTick($)
 }
 
 const STATUS_ICON: Record<string, string> = {
@@ -1224,14 +1358,8 @@ export const register: Register = on => {
     void dropStale($)
     // Redraw on a timer so "… trước" keeps moving while nothing happens. Stops when the module reloads.
     // Verified in the desktop app 11/11/2026 (store heartbeat): fires every REFRESH_MS.
-    $.clock.every(REFRESH_MS, () => {
-      $.ui.invalidate('ui.render')
-      ticks += 1
-      if (ticks % USAGE_EVERY === 0 && Date.now() - lastDrawnAt < PANE_ALIVE_MS) {
-        void refreshUsage($)
-      }
-      if (ticks % MCP_EVERY === 0 && Date.now() - lastDrawnAt < PANE_ALIVE_MS) void refreshMcp($)
-    })
+    void loadNotify($)
+    $.clock.every(REFRESH_MS, () => void onTick($))
     return next(e)
   })
 
@@ -1498,7 +1626,7 @@ export const register: Register = on => {
     const live = new Map((await $.agent.list()).map(agent => [agent.id, agent.status as string]))
     const rows = (await read($, agents)).map(row =>
       ({ ...row, status: shownStatus(row, live, now) }))
-    const log = await read($, events)
+    const log = [...(await read($, events)), ...notifyLog].sort((x, y) => x.at - y.at)
     const snap = await read($, usage)
     lastDrawnAt = Date.now()
     if (snap.at === 0) void refreshUsage($) // first drawing: fetch figures right away
@@ -1508,6 +1636,7 @@ export const register: Register = on => {
     const working = rows.filter(row => row.status === 'running').length
     const problems = rows.reduce((sum, row) => sum + row.errors + (row.blocked ?? 0), 0)
     const urgent = attention(log, now)
+    const notifySet = (await loadNotify($)) ?? DEFAULT_NOTIFY
     const shipNeeds = snap.ship && !snap.ship.result ? shipAlerts(snap.ship) : []
     const raceNeeds = snap.race ? raceAlerts(snap.race) : []
     const profile = showRoles ? await loadProfile($) : undefined
@@ -1554,6 +1683,39 @@ export const register: Register = on => {
             ))}
           </Box>
         )}
+        <Box key="notify" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
+          <Box flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            <Text weight="semibold">Thông báo</Text>
+            <Text color={notifySet.on ? 'success' : 'subtle'}>
+              {stateText(notifySet)}
+            </Text>
+            <Button key="notify-toggle" variant="secondary"
+              onPress={() => void setNotify($, current => ({ ...current, on: !current.on }))}>
+              {notifySet.on ? 'Tắt' : 'Bật'}
+            </Button>
+            {DELAYS.map(sec => (
+              <Button key={`notify-delay-${sec}`} variant={notifySet.delaySec === sec ? 'primary' : 'secondary'}
+                onPress={() => void setNotify($, current => ({ ...current, delaySec: sec }))}>
+                {sec === 0 ? 'Ngay' : sec === 60 ? '60 s' : '5 phút'}
+              </Button>
+            ))}
+          </Box>
+          <Box flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            {CATEGORIES.map((name: Category) => (
+              <Button key={`notify-cat-${name}`} variant={notifySet.cats[name] ? 'primary' : 'secondary'}
+                onPress={() => void setNotify($, current => ({ ...current, cats: { ...current.cats, [name]: !current.cats[name] } }))}>
+                {`${notifySet.cats[name] ? '✓' : '○'} ${CATEGORY_LABEL[name]}`}
+              </Button>
+            ))}
+          </Box>
+          {notifyLast && (
+            <Text size="footnote" wrap="wrap" color={notifyLast.reason ? 'warning' : undefined} dimColor={!notifyLast.reason}>
+              {notifyLast.reason
+                ? `${failureText(notifyLast.reason)}: ${notifyLast.text}`
+                : `đã gửi ${ago(now - notifyLast.at)} trước: ${notifyLast.text}`}
+            </Text>
+          )}
+        </Box>
         {snap.ship && (
           <Box key="ship" flexDirection="column" borderStyle="round" paddingX={1}
             borderColor={snap.ship.failed || snap.ship.result === 'failed' ? 'error' : snap.ship.result ? 'success' : 'claude'}>
