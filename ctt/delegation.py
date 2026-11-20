@@ -8,9 +8,15 @@ For each subagent (<folder>/<session>/subagents/agent-<id>.jsonl) against its se
   when the agent started, growing by what the agent's tools brought in; that growth also stays in the main
   context and is read again on every later main call; plus the agent's output, written by the main model.
 
+- orchestration (actual, counted on the delegated side): the briefs the main thread wrote to the agent (the first
+  task and every follow-up message, written as main-model output, cached, then read again on every later main
+  call), plus every main-thread turn the agent's completion notification woke up (reading the report, checking
+  the work, answering) — the part of delegating that a person does by hand in a tool without an orchestrator.
+
 Only tokens and $ are compared: an agent that got it wrong and had to redo is not seen here.
 """
 import json
+import re
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -42,10 +48,22 @@ class AgentRun:
     self_usd: float
     first: Request
     rest: list
+    brief_tokens: int = 0
+    brief_usd: float = 0.0
+    wake_calls: int = 0
+    wake_usd: float = 0.0
+
+    @property
+    def orchestration_usd(self):
+        return self.brief_usd + self.wake_usd
+
+    @property
+    def delegated_usd(self):
+        return self.actual_usd + self.orchestration_usd
 
     @property
     def saving(self):
-        return self.self_usd - self.actual_usd
+        return self.self_usd - self.delegated_usd
 
 
 def _time(text):
@@ -89,14 +107,86 @@ def read_requests(path, session, is_subagent):
     return sorted(by_id.values(), key=lambda request: request.timestamp), handback or last_text
 
 
+NOTIFICATION = re.compile(r"^\s*<task-notification>\s*<task-id>([^<]+)</task-id>.*?</task-notification>\s*$", re.S)
+
+
+def _user_text(message):
+    """The text a user row carries, or None when it is only tool results (a step inside a turn, not a new turn)."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list) or any(isinstance(block, dict) and block.get("type") == "tool_result"
+                                            for block in content):
+        return None
+    texts = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+    return "\n".join(texts) if texts else None
+
+
+def turn_starts(path):
+    """[(time, agent id or None)] for every main-thread turn: an agent id when the turn was started by that agent's
+    completion notification alone (one that arrives with a person's message is the person's turn)."""
+    from ctt.config import long_path
+    starts = []
+    with open(long_path(path), encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") != "user" or row.get("isMeta") or row.get("isSidechain"):
+                continue
+            text = _user_text(row.get("message") or {})
+            when = _time(row.get("timestamp"))
+            if text is None or when is None:
+                continue
+            match = NOTIFICATION.match(text)
+            starts.append((when, match.group(1).strip() if match else None))
+    return starts
+
+
+def briefs(path):
+    """[(time, tokens)] of what the main thread wrote to an agent: its first task and each later message."""
+    from ctt.config import long_path
+    found = []
+    with open(long_path(path), encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") != "user" or row.get("isMeta"):
+                continue
+            text = _user_text(row.get("message") or {})
+            when = _time(row.get("timestamp"))
+            if text and text.strip() and when is not None:
+                found.append((when, round(len(text) / CHARS_PER_TOKEN)))
+    return found
+
+
+def wake_turns(main_requests, starts, agent):
+    """The main-thread requests of each turn the agent's notification started (until the next turn starts)."""
+    turns = []
+    times = [when for when, _ in starts]
+    for index, (when, woke) in enumerate(starts):
+        if woke != agent:
+            continue
+        until = times[index + 1] if index + 1 < len(times) else None
+        turns.append([request for request in main_requests
+                      if request.timestamp >= when and (until is None or request.timestamp < until)])
+    return turns
+
+
 def _usd(prices, model, *, read=0, write_5m=0, write_1h=0, input_tokens=0, output=0):
     price = prices.lookup(model)[0].at(input_tokens + read + write_5m + write_1h)
     return (input_tokens * price.input + output * price.output + read * price.cache_read
             + write_5m * price.cache_write_5m + write_1h * price.cache_write_1h) / 1e6
 
 
-def measure(main_requests, agent_requests, report, prices, session="", project="", agent=""):
-    """One AgentRun, or None when the agent made no request or nothing of the main thread came before it."""
+def measure(main_requests, agent_requests, report, prices, session="", project="", agent="", brief_list=(),
+            wakes=()):
+    """One AgentRun, or None when the agent made no request or nothing of the main thread came before it.
+    `brief_list`: [(time, tokens)] the main thread wrote to the agent; `wakes`: the main requests of each turn the
+    agent's notification started."""
     if not agent_requests:
         return None
     start, end = agent_requests[0].timestamp, agent_requests[-1].timestamp
@@ -116,9 +206,15 @@ def measure(main_requests, agent_requests, report, prices, session="", project="
     actual = agent_usd + _usd(prices, main_model, write_1h=report_tokens, read=report_tokens * len(later))
     self_done = _usd(prices, main_model, read=round(calls * (main_context + growth / 2)), write_1h=growth,
                      output=output) + _usd(prices, main_model, read=growth * len(later))
+    brief_tokens = sum(tokens for _, tokens in brief_list)
+    brief_usd = sum(_usd(prices, main_model, output=tokens, write_1h=tokens,
+                         read=tokens * sum(request.timestamp > when for request in main_requests))
+                    for when, tokens in brief_list)
+    wake_requests = [request for turn in wakes for request in turn]
+    wake_usd = sum(prices.cost(request)[0] for request in wake_requests)
     return AgentRun(session, project, agent, agent_requests[0].model, main_model, calls, start_context, growth, output,
                     report_tokens, main_context, len(later), agent_usd, actual, self_done, agent_requests[0],
-                    agent_requests[1:])
+                    agent_requests[1:], brief_tokens, brief_usd, len(wake_requests), wake_usd)
 
 
 def runs(projects_dir, prices, days=30, now=None):
@@ -133,12 +229,14 @@ def runs(projects_dir, prices, days=30, now=None):
         if not agent_paths:
             continue
         main_requests, _ = read_requests(main_path, main_path.stem, False)
+        starts = turn_starts(main_path)
         for path in agent_paths:
             agent_requests, report = read_requests(path, main_path.stem, True)
             if not agent_requests or agent_requests[0].timestamp < since:
                 continue
+            agent = path.stem[len("agent-"):]
             run = measure(main_requests, agent_requests, report, prices, main_path.stem, main_path.parent.name,
-                          path.stem[len("agent-"):])
+                          agent, briefs(path), wake_turns(main_requests, starts, agent))
             if run:
                 found.append(run)
     return found
@@ -164,7 +262,8 @@ def break_even(found, prices, main_model, agent_model, contexts=CONTEXTS):
     after = statistics.median(run.later_main_calls for run in found)
     start = _usd(prices, agent_model, write_5m=first_new, read=first_read, output=call_out)
     per_call = _usd(prices, agent_model, write_5m=call_new, read=call_read, output=call_out)
-    report_cost = _usd(prices, main_model, write_1h=report_tokens, read=report_tokens * after)
+    report_cost = (_usd(prices, main_model, write_1h=report_tokens, read=report_tokens * after)
+                   + statistics.median(run.orchestration_usd for run in found))
     result = {}
     for context in contexts:
         result[context] = None
@@ -191,16 +290,27 @@ def report(found, prices, days, main_model=None):
     lines = [f"Giao việc cho agent — {len(found)} agent, {days} ngày qua (chỉ so token và $; không thấy việc làm lại)",
              "",
              f"{'agent':<10} {'model':<18} {'lượt':>4} {'ctx chính':>9} {'khởi động':>9} {'đã giao':>8} "
-             f"{'tự làm':>8} {'chênh':>8}"]
+             f"{'điều phối':>9} {'tự làm':>8} {'chênh':>8}"]
     for run in sorted(found, key=lambda run: run.saving):
         lines.append(f"{run.agent[:10]:<10} {run.model.replace('claude-', '')[:18]:<18} {run.calls:>4} "
                      f"{_k(run.main_context):>9} {_k(run.start_context):>9} ${run.actual_usd:>7.2f} "
-                     f"${run.self_usd:>7.2f} {'+' if run.saving >= 0 else '-'}${abs(run.saving):>6.2f}")
+                     f"${run.orchestration_usd:>8.2f} ${run.self_usd:>7.2f} "
+                     f"{'+' if run.saving >= 0 else '-'}${abs(run.saving):>6.2f}")
     saved = sum(run.saving for run in found)
     wins = sum(run.saving >= 0 for run in found)
+    agents = sum(run.actual_usd for run in found)
+    briefs_usd = sum(run.brief_usd for run in found)
+    wakes_usd = sum(run.wake_usd for run in found)
+    self_usd = sum(run.self_usd for run in found)
     lines += ["", f"Tổng: giao việc {'tiết kiệm' if saved >= 0 else 'tốn thêm'} ${abs(saved):.2f} · "
                   f"{wins}/{len(found)} agent có lời · khởi động trung vị "
-                  f"{_k(statistics.median(run.start_context for run in found))} token context"]
+                  f"{_k(statistics.median(run.start_context for run in found))} token context",
+              f"Chi tiết: agent ${agents:.2f} + điều phối ${briefs_usd + wakes_usd:.2f} (lời giao việc "
+              f"{_k(sum(run.brief_tokens for run in found))} token ${briefs_usd:.2f}; "
+              f"{sum(run.wake_calls for run in found)} lượt phiên chính khi agent báo xong ${wakes_usd:.2f}) "
+              f"so với tự làm ${self_usd:.2f}.",
+              "Điều phối = phần một công cụ không có lớp điều phối (bạn tự chia việc, tự đọc báo cáo, tự kiểm) không "
+              "tốn token. Lượt khi agent báo xong gồm cả việc kiểm chứng — tự làm cũng phải kiểm, nên đây là mức trần."]
     main_model = main_model or statistics.mode(run.main_model for run in found)
     lines += ["", f"Hòa vốn — phiên chính chạy {main_model.replace('claude-', '')}: việc cần ít nhất bao nhiêu lượt "
                   "thì giao mới có lời (theo context phiên chính lúc giao)"]

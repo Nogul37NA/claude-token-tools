@@ -80,6 +80,36 @@ class DelegationTest(unittest.TestCase):
         self.assertEqual((fallback["nudge"], fallback["hint_model"]), (True, False))
         self.assertIsNone(delegation.session_model(self.projects, "nope"))
 
+    def test_orchestration_counts_briefs_and_the_turns_a_notification_starts(self):
+        folder = self.projects / "C--work-demo"
+
+        def user(minute, content, session="s1"):
+            return {"type": "user", "sessionId": session, "timestamp": f"2026-11-12T10:{minute:02d}:00Z",
+                    "message": {"role": "user", "content": content}}
+
+        note = "<task-notification>\n<task-id>{}</task-id>\n<status>completed</status>\n</task-notification>"
+        main_rows = (calls("s1", "m", 0, [100_000]) + calls("s1", "n", 20, [500_000])
+                     + [user(50, note.format("long"))] + calls("s1", "z", 50, [520_000] * 2)
+                     + [user(52, note.format("short") + "\nngười dùng: tiếp đi")] + calls("s1", "y", 52, [520_000]))
+        write_jsonl(folder / "s1.jsonl", main_rows)
+        agent_rows = calls("s1", "b", 21, [40_000 + 3_000 * k for k in range(28)], write_first=40_000,
+                           handback="Xong: 12 file, build pass.")
+        agent_rows.insert(0, user(21, "x" * 250))  # the task: 100 tokens
+        agent_rows.insert(2, user(22, [{"type": "tool_result", "tool_use_id": "t", "content": "y" * 5000}]))
+        write_jsonl(folder / "s1" / "subagents" / "agent-long.jsonl", agent_rows)
+        found = self.found()
+        long, short = found["long"], found["short"]
+        self.assertEqual((long.brief_tokens, long.wake_calls), (100, 2))
+        self.assertGreater(long.brief_usd, 0)
+        wake = sum(self.prices.cost(request)[0] for request in delegation.read_requests(folder / "s1.jsonl", "s1", False)[0]
+                   if request.timestamp.minute in (50, 51))
+        self.assertAlmostEqual(long.wake_usd, wake)
+        self.assertAlmostEqual(long.saving, long.self_usd - long.actual_usd - long.brief_usd - long.wake_usd)
+        self.assertEqual(short.wake_calls, 0)  # its notification came with a person's message: their turn
+        text = delegation.report(list(found.values()), self.prices, 30)
+        self.assertIn("điều phối", text)
+        self.assertIn("2 lượt phiên chính khi agent báo xong", text)
+
     def test_report_and_cli(self):
         text = delegation.report(list(self.found().values()), self.prices, 30)
         self.assertIn("1/2 agent có lời", text)
